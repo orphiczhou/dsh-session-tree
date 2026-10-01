@@ -1,0 +1,56 @@
+{
+  "name": "@orphiczhou/dsh-session-tree",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Left-sidebar session tree for DeepSeek Harness: every session with its nested subagent descendants, click-through to multi-turn conversations, plus the tree_send tool for messaging any continuable session across the tree.",
+  "license": "MIT",
+  "author": "orphiczhou",
+  "keywords": [
+    "dsh-plugin",
+    "dsh",
+    "deepseek-harness",
+    "session-tree",
+    "sidebar",
+    "subagent",
+    "cordis"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/orphiczhou/dsh-session-tree.git"
+  },
+  "homepage": "https://github.com/orphiczhou/dsh-session-tree#readme",
+  "bugs": {
+    "url": "https://github.com/orphiczhou/dsh-session-tree/issues"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "locale",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    }
+  },
+  "icon": "./icon.svg"
+}

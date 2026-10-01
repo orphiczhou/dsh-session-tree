@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session Tree",
+    "description": "Shows every session and its nested subagent descendants as a tree in the left sidebar. Click a node to open its conversation."
+  }
+}

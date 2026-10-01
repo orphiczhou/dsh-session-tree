@@ -1,0 +1,13 @@
+# Patch layer contributed by this bundle.
+#
+# Installing the package records it in the profile's `dsh.profile.bundles`; this
+# file is the ordered layer that bundle then contributes: one Cordis row, which
+# the Loader imports from this same package (`exports["."]` -> index.js) for the
+# Host half, while the browser half is fetched through `exports["./client"]`.
+#
+# To turn the plugin off without uninstalling it, disable the `session-tree` row
+# in the profile (the shipped WorkspaceBrowser at priority 0 takes the seat back
+# immediately, no restart).
+- insert:
+    - id: session-tree
+      name: '@orphiczhou/dsh-session-tree'

@@ -1,0 +1,16 @@
+# Dependencies (this package has none, but local experiments may create these)
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*~
+
+# Local scratch
+*.log
+tmp/
