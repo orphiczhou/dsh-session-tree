@@ -1,6 +1,6 @@
 {
   "name": "@orphiczhou/dsh-session-tree",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "type": "module",
   "description": "Left-sidebar session tree for DeepSeek Harness: every session with its nested subagent descendants, click-through to multi-turn conversations, plus the tree_send tool for messaging any continuable session across the tree.",
   "license": "MIT",

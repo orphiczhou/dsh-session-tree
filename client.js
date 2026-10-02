@@ -139,6 +139,46 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /**
+     * Self-heal for the stylesheet itself. v1.0.3 took the sheet out of React's
+     * hands, but a long-lived page can still lose it some other way (a hot
+     * client-module swap, some other code's cleanup sweeping <head>) — and the
+     * failure mode is exactly the silent one measured in the live sidebar:
+     * every `st-*` class present, nothing matching them. So once the sheet is
+     * genuinely in <head>, watch for its removal and put it straight back.
+     *
+     * Two narrow `childList` observers (never `subtree`) cover both ways the
+     * sheet can vanish:
+     *   - `document.head`            → someone removed our <style> child;
+     *   - `document.documentElement` → the entire <head> got replaced.
+     * The callback does exactly one thing: re-query and re-inject when absent.
+     * That is self-limiting (the re-injection fires the observer once more, the
+     * query now hits, nothing further happens) and cheap (no <body> watch).
+     *
+     * Armed at most once per module load (`stylesGuarded`), and only after a
+     * real injection (`stylesInHead`) — `ensureStylesheet` stays a pure
+     * inject-once query-or-append, so re-running it can never double-arm the
+     * guard. Where the platform cannot support it (no `document`, no
+     * `MutationObserver`: the vm test sandbox, old browsers) the guard silently
+     * does nothing and rendering keeps the inline-<style> fallback.
+     */
+    let stylesGuarded = false
+    function guardStylesheet() {
+      if (stylesGuarded) return
+      stylesGuarded = true
+      if (!stylesInHead) return
+      if (typeof document === 'undefined' || typeof MutationObserver !== 'function') return
+      const reassert = () => {
+        if (document.querySelector(STYLE_SELECTOR) === null) ensureStylesheet()
+      }
+      try {
+        if (document.head) new MutationObserver(reassert).observe(document.head, { childList: true })
+        if (document.documentElement) {
+          new MutationObserver(reassert).observe(document.documentElement, { childList: true })
+        }
+      } catch (e) {}
+    }
+
     const DICT = {
       en: {
         title: 'Sessions',
@@ -1613,6 +1653,9 @@ window.__ModuleLoader__.load({
         // paint of the tree is already styled. When there is no document (tests,
         // SSR) this is false and the render falls back to an inline <style>.
         stylesInHead = ensureStylesheet()
+        // From here on the sheet must survive whatever else the page does to
+        // <head>: arm the removal guard (a silent no-op where it cannot attach).
+        guardStylesheet()
         let bound = null
         try {
           if (ctx.locale && typeof ctx.locale.register === 'function' && typeof ctx.locale.bind === 'function') {
