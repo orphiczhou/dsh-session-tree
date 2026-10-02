@@ -28,6 +28,7 @@
 | 搜索框 | 按标签或会话 id 过滤；过滤时结果仍留在各自的工作区分组下。 |
 | 折叠后的侧栏 | 左栏被折叠成图标条时渲染一个 `≡` 按钮，点击即可展开侧栏。 |
 | `tree_send` 工具 | 宿主半工具：向树里任意可续聊的子会话投递消息，兄弟会话也可以。 |
+| `SessionTree` 检视 provider | 只读的 Cordis Inspect provider：回报左栏**实际渲染成了什么**——行序、层级、缩进、几何与计算样式——让 agent 用已有的 `cordis_inspect_query` 自己看真实应用里的树，而不必让你念屏幕。 |
 
 ## 安装
 
@@ -154,6 +155,7 @@ A  （顶层会话，由它来调用 tree_send）
 - **标题。** 最新标题在挂载时通过 `remote.session.list({})` 从宿主读取——那是每次现读、覆盖全部会话、并带上各自当前 `projections.values.title` 的接口。客户端 store 里的投影快照**每个连接只加载一次基线**，之后 `refreshProjections` 就是空操作，因此 store 里可能永远停在一个早期的 `fallback` 标题上。选 **重新加载标题** 可以再读一次。
 - **打开会话。** 点击节点复用自带导航（`openSession`），所以打开的就是普通的对话界面、普通的标题栏和输入区。
 - **宿主半**只注册一个工具 `tree_send`。工具定义直接写成 `defineTool()` 产出的纯对象形状，因此不导入 `@deepseek-ai/dsh-tools`，它也不是依赖。
+- **检视 provider（`SessionTree.snapshot`）。** 客户端半边注册一个只读的 Cordis Inspect provider，让 agent 能读回屏幕上那棵树：按文档顺序的每一行，含身份（`data-key`）、类型、层级、计算出的 `paddingLeft`、颜色、背景、字重、包围盒几何，以及 `groupCount` / `rowCount`。每一行带 `data-key` / `data-kind` / `data-depth` 正是为了这个：快照报告的是**画出来的东西**，而不是从 state 重算的结果，所以渲染回归藏不到全绿的测试套件后面。`cordisInspect` 由 client runner 提供，并非每种组合都有，因此用**可选注入**（`ctx.inject(['cordisInspect'], cb)`）请求：服务缺席时回调根本不会被调用，左栏照常渲染。它**绝不**进插件声明的 `inject` 数组——那里少一个服务会让整个插件不加载。
 
 ## 兼容性与版本策略
 

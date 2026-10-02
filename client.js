@@ -1149,6 +1149,14 @@ window.__ModuleLoader__.load({
                     key: row.key,
                     role: 'treeitem',
                     'aria-expanded': row.expanded ? 'true' : 'false',
+                    // Render identity, readable from the live DOM: `data-key` is the
+                    // exact React key of this row and `data-kind`/`data-depth` say
+                    // what it is and how deep it sits. The SessionTree inspect
+                    // provider answers from these attributes, so a geometry change
+                    // can never silently disagree with what was rendered.
+                    'data-key': row.key,
+                    'data-kind': 'workspace',
+                    'data-depth': String(row.depth),
                     style: { paddingLeft: 6 + row.depth * 13 },
                     title: row.path || row.label,
                     onClick: () => toggleGroup(row.id),
@@ -1175,6 +1183,12 @@ window.__ModuleLoader__.load({
                   className: 'st-row',
                   key: row.key,
                   role: 'treeitem',
+                  // See the group row: identity and depth must be readable straight
+                  // off the DOM, because the SessionTree inspect provider reports
+                  // what actually rendered instead of recomputing it from state.
+                  'data-key': row.key,
+                  'data-kind': row.kind,
+                  'data-depth': String(row.depth),
                   style: { paddingLeft: 6 + row.depth * 13 },
                   title: [row.label, row.secondary, row.labelIsFallback ? t('titlePending') : null]
                     .filter(Boolean)
@@ -1365,6 +1379,190 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /**
+     * Provider id of this plugin's read-only Cordis Inspect surface.
+     * Registration is process-wide unique, so it must never be registered twice
+     * (a second `register()` of the same id throws in the client registry).
+     */
+    const INSPECT_ID = 'SessionTree'
+    const INSPECT_METHOD = 'snapshot'
+    /** Measured class geometry, mirrored from the CSS above: base padding, 13px step. */
+    const ROW_BASE_PAD = 6
+    const ROW_DEPTH_STEP = 13
+
+    /** Text that the app actually shows for one value; non-strings degrade to ''. */
+    function inspectText(value) {
+      if (typeof value === 'string') return value
+      if (value === null || value === undefined) return ''
+      return String(value)
+    }
+
+    /** Attribute read that never throws on a missing or exotic node. */
+    function inspectAttr(el, name) {
+      if (!el || typeof el.getAttribute !== 'function') return ''
+      return inspectText(el.getAttribute(name))
+    }
+
+    /**
+     * Depth of one rendered row, read from `data-depth` and falling back to the
+     * padding the renderer applied. `-1` means "not determinable"; the schema
+     * admits it because `depth` is `number`, not `integer`, and an honest -1 beats
+     * inventing a level.
+     */
+    function inspectDepth(el, cs) {
+      const declared = inspectAttr(el, 'data-depth')
+      if (declared !== '') {
+        const n = Number(declared)
+        if (isFinite(n) && n >= 0) return Math.round(n)
+      }
+      const pad = parseFloat(cs && cs.paddingLeft)
+      if (!isFinite(pad)) return -1
+      return Math.round((pad - ROW_BASE_PAD) / ROW_DEPTH_STEP)
+    }
+
+    /** What the sidebar actually rendered, read back from the live DOM. */
+    function snapshotRenderedRows() {
+      const doc = typeof document === 'undefined' ? null : document
+      if (!doc || typeof doc.querySelectorAll !== 'function') return { rows: [], groupCount: 0, rowCount: 0 }
+      const rows = []
+      // `.st-row` is the class every rendered ROW shares (workspace group and
+      // session); `.st-note` (empty / "no subagents" / "N more omitted" hint) is
+      // not a tree row and carries no row identity, so it is not a row here.
+      const nodes = doc.querySelectorAll('.st-row')
+      for (let i = 0; i < nodes.length; i++) {
+        const el = nodes[i]
+        const cs = getComputedStyle(el)
+        const box = el.getBoundingClientRect()
+        const label = el.querySelector('.st-label')
+        const dot = el.querySelector('.st-dot')
+        rows.push({
+          key: inspectAttr(el, 'data-key'),
+          kind: inspectAttr(el, 'data-kind') || 'session',
+          depth: inspectDepth(el, cs),
+          paddingLeft: inspectText(cs.paddingLeft),
+          label: label ? inspectText(label.textContent).trim() : '',
+          secondary: label ? inspectAttr(label, 'title') : '',
+          state: dot ? inspectAttr(dot, 'data-state') : '',
+          expanded: el.getAttribute('aria-expanded') === 'true',
+          color: inspectText(cs.color),
+          background: inspectText(cs.backgroundColor),
+          fontWeight: inspectText(cs.fontWeight),
+          top: Math.round(box.top),
+          height: Math.round(box.height),
+          visible: box.width > 0 && box.height > 0,
+        })
+      }
+      let groupCount = 0
+      for (const row of rows) if (row.kind === 'workspace') groupCount += 1
+      return { rows, groupCount, rowCount: rows.length }
+    }
+
+    /**
+     * Publish the rendered tree as a read-only Cordis Inspect provider, so an
+     * agent can read what the sidebar ACTUALLY rendered (row order, level,
+     * indentation, geometry, computed styles) inside the real running app — the
+     * failure class that 107 green assertions never caught.
+     *
+     * `cordisInspect` is provided by the client runner, which is not part of
+     * every composition, so it is requested with an OPTIONAL injection:
+     * `ctx.inject([...], cb)` simply never calls `cb` while the service is
+     * absent. It must never join the plugin's hard `inject` array — one missing
+     * service there stops the WHOLE plugin from loading, and the left sidebar
+     * silently falls back to the shipped browser.
+     */
+    function registerInspectProvider(ctx) {
+      if (!ctx || typeof ctx.inject !== 'function') return
+      try {
+        ctx.inject(['cordisInspect'], (scoped) => {
+          const inspect =
+            (scoped && scoped.cordisInspect) ||
+            (typeof ctx.get === 'function' ? ctx.get('cordisInspect') : undefined)
+          if (!inspect || typeof inspect.register !== 'function') return
+          return inspect.register({
+            manifest: {
+              id: INSPECT_ID,
+              description: 'What the session-tree sidebar actually rendered, read from the live DOM.',
+              methods: [
+                {
+                  name: INSPECT_METHOD,
+                  description:
+                    'Rendered rows in document order with level, indentation, geometry and computed styles.',
+                  inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+                  // The Host enforces this schema strictly in BOTH directions: a
+                  // keyword outside the enforced subset is refused when the manifest
+                  // is published, and an answer is rejected when it carries a field
+                  // outside `properties`, omits a `required` field, or has the wrong
+                  // scalar type. Every field below is therefore declared AND always
+                  // present in the returned row.
+                  outputSchema: {
+                    type: 'object',
+                    properties: {
+                      rows: {
+                        type: 'array',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            key: { type: 'string' },
+                            kind: { type: 'string' },
+                            depth: { type: 'number' },
+                            paddingLeft: { type: 'string' },
+                            label: { type: 'string' },
+                            secondary: { type: 'string' },
+                            state: { type: 'string' },
+                            expanded: { type: 'boolean' },
+                            color: { type: 'string' },
+                            background: { type: 'string' },
+                            fontWeight: { type: 'string' },
+                            top: { type: 'number' },
+                            height: { type: 'number' },
+                            visible: { type: 'boolean' },
+                          },
+                          required: [
+                            'key',
+                            'kind',
+                            'depth',
+                            'paddingLeft',
+                            'label',
+                            'secondary',
+                            'state',
+                            'expanded',
+                            'color',
+                            'background',
+                            'fontWeight',
+                            'top',
+                            'height',
+                            'visible',
+                          ],
+                          additionalProperties: false,
+                        },
+                      },
+                      groupCount: { type: 'number' },
+                      rowCount: { type: 'number' },
+                    },
+                    required: ['rows', 'groupCount', 'rowCount'],
+                    additionalProperties: false,
+                  },
+                },
+              ],
+            },
+            query(method) {
+              if (method !== INSPECT_METHOD) throw new Error(`unknown ${INSPECT_ID} inspect method "${method}"`)
+              return snapshotRenderedRows()
+            },
+          })
+          // The disposer IS the callback's return value, so Cordis ties the
+          // registration to this plugin's fiber: unloading the plugin retires the
+          // provider with it.
+        })
+      } catch (e) {
+        // Only reachable when the callback itself threw — an absent service never
+        // calls it. The sidebar keeps rendering either way, so this is loud, not fatal.
+        try {
+          console.error('[session-tree] SessionTree inspect provider registration failed', e)
+        } catch (_) {}
+      }
+    }
+
     return {
       // These MUST be declared. `apply`'s ctx only carries services that `inject`
       // resolves, so with `['slots']` alone `ctx.uiWorkspace` is undefined and
@@ -1389,6 +1587,8 @@ window.__ModuleLoader__.load({
         ctx.slots.inject('sidebar.workspaces', () =>
           ctx.slots.register({ name: 'sidebar.workspaces', priority: -100 }, Component),
         )
+
+        registerInspectProvider(ctx)
       },
     }
   },

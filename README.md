@@ -28,6 +28,7 @@ A DeepSeek Harness profile bundle that turns the left sidebar into a **session t
 | Search box | Filters rows by label or session id. While filtering, matches stay grouped under their workspace headers. |
 | Collapsed-sidebar rail | When the sidebar is collapsed to its icon rail, renders a `≡` button that expands it again. |
 | `tree_send` tool | Host-side tool that delivers a message to any continuable subagent session in the tree, including a sibling. |
+| `SessionTree` inspect provider | Read-only Cordis Inspect provider that reports what the sidebar **actually rendered** — row order, level, indentation, geometry and computed styles — so an agent can inspect the live tree through `cordis_inspect_query` instead of asking you to read the screen. |
 
 ## Install
 
@@ -154,6 +155,7 @@ Failures are reported as thrown errors with a `tree_send:` prefix, for example `
 - **Titles.** The newest title is read from the Host on mount through `remote.session.list({})`, which reads every session fresh and carries each session's current `projections.values.title`. That matters because the client store's projection snapshot is loaded once per connection and can keep an early `fallback` title forever; the client-side `refreshProjections` is a no-op once that baseline is ready. Titles are re-read when you pick **Reload titles**.
 - **Opening.** Clicking a node reuses the shipped navigation (`openSession`), so the opened conversation is the ordinary one, with the ordinary header and composer.
 - **The Host half** registers one tool, `tree_send`. The tool definition is a plain object in the shape `defineTool()` produces, so `@deepseek-ai/dsh-tools` is not imported and is not a dependency.
+- **Inspect provider (`SessionTree.snapshot`).** The client half registers one read-only Cordis Inspect provider, so an agent can read back the tree that is on screen: every rendered row in document order with its identity (`data-key`), kind, level, computed `paddingLeft`, colour, background, font weight and bounding-box geometry, plus `groupCount` / `rowCount`. Rows carry `data-key`, `data-kind` and `data-depth` for exactly that reason — the snapshot reports what was drawn rather than recomputing it from state, so a rendering regression cannot hide behind a green test suite. `cordisInspect` belongs to the client runner and is **not** part of every composition, so it is requested with an **optional** injection (`ctx.inject(['cordisInspect'], cb)`): where the service is absent the callback never runs and the sidebar renders exactly as before. It is deliberately not in the plugin's declared `inject` list, where one missing service would stop the whole plugin from loading.
 
 ## Compatibility & version policy
 
