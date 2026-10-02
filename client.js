@@ -4,6 +4,16 @@
  * Renders the workspace's sessions as a tree in the LEFT SIDEBAR by occupying
  * the `sidebar.workspaces` single-slot seat at priority -100.
  *
+ * The tree is grouped by WORKSPACE, which is what the shipped browser does and
+ * what this plugin restores. `useWorkspaces` exposes the Host's ordered
+ * `WorkspaceView[]` as `state.items`; a session belongs to the workspace whose
+ * `sessionIds` lists it (NOT by `cwd` — that only gates attaching a session to
+ * a workspace), and sessions no workspace accounts for collect in a synthetic
+ * "Ungrouped" group rendered last. See `groupByWorkspace` in
+ * `dsh-client-ui-workspace/lib/client.js:420-439`. Where the shipped browser
+ * hides every `origin:'subagent'` row and shows a running-child count instead
+ * (`:358`), this plugin keeps the descendants nested under their parent.
+ *
  * Why -100: `dsh-client-ui-slots` elects the LOWEST priority for a `single`
  * slot (`lib/index.js:168-172`), and registering at an already-taken priority
  * THROWS at load. The shipped `WorkspaceBrowser` sits at priority 0, so -100
@@ -45,6 +55,12 @@ window.__ModuleLoader__.load({
 .st-head{display:flex;align-items:center;gap:6px;padding:8px 10px 4px;color:var(--dsw-alias-label-tertiary);font-size:12px;flex:none}
 .st-head-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .st-count{flex:none;opacity:.7}
+/* Workspace group row: the level the shipped browser groups sessions under. */
+.st-group{font-weight:600;color:var(--dsw-alias-label-secondary);cursor:pointer}
+.st-group:hover{color:var(--dsw-alias-label-primary)}
+.st-folder{flex:none;width:13px;height:13px;opacity:.8}
+.st-group-path{flex:none;max-width:34%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.55;font-weight:400;font-size:11px}
+.st-group-ungrouped{font-style:italic;font-weight:500}
 .st-search{margin:0 8px 6px;flex:none}
 .st-search input{width:100%;box-sizing:border-box;padding:4px 8px;border-radius:var(--dsw-radius-sm);border:1px solid var(--dsw-alias-border-l1);background:transparent;color:inherit;font:inherit;outline:none}
 .st-scroll{overflow:auto;min-height:0;flex:1;padding:0 6px 12px}
@@ -93,6 +109,7 @@ window.__ModuleLoader__.load({
         empty: 'No sessions in this workspace',
         none: 'No matches',
         noChildren: 'No subagents',
+        ungrouped: 'Ungrouped',
         subagent: 'sub',
         more: '{n} more omitted',
         expand: 'Expand sidebar',
@@ -128,6 +145,7 @@ window.__ModuleLoader__.load({
         empty: '此工作区暂无会话',
         none: '无匹配项',
         noChildren: '无子会话',
+        ungrouped: '未分组',
         subagent: '子',
         more: '另有 {n} 个未显示',
         expand: '展开侧栏',
@@ -175,6 +193,20 @@ window.__ModuleLoader__.load({
 
     const shortId = (id) => String(id == null ? '' : id).replace(/^session-/, '').slice(0, 8)
     const num = (v) => (typeof v === 'number' && isFinite(v) ? v : 0)
+
+    /**
+     * Display label for one `WorkspaceView`: its stored title, else the basename
+     * of its path — the same fallback the shipped browser uses
+     * (`dsh-client-ui-workspace/lib/client.js:268-272` `workspaceLabel`).
+     */
+    function workspaceLabel(w, fallback) {
+      const title = w && typeof w.title === 'string' ? w.title.trim() : ''
+      if (title) return title
+      const p = w && typeof w.path === 'string' ? w.path : ''
+      const parts = p.split(/[\\/]+/).filter(Boolean)
+      if (parts.length) return parts[parts.length - 1]
+      return fallback
+    }
 
     /** Client store row OR Host SessionSummary -> the fields the tree needs. */
     function norm(key, raw) {
@@ -385,6 +417,203 @@ window.__ModuleLoader__.load({
       const q = String(query || '').trim().toLowerCase()
       const matches = (label, id) => q === '' || String(label).toLowerCase().includes(q) || String(id).toLowerCase().includes(q)
 
+      /**
+       * Workspace level, restored from the shipped browser.
+       *
+       * `useWorkspaces` exposes the Host's `WorkspaceView` list as `items`. The
+       * shipped browser groups sessions by **`workspace.sessionIds` membership**
+       * — not by `cwd`, which only gates attaching a session to a workspace —
+       * and appends a synthetic Ungrouped bucket last for sessions no workspace
+       * accounts for (`dsh-client-ui-workspace/lib/client.js:420-439`
+       * `groupByWorkspace`; the bucket's label is `t("group.ungrouped")` at
+       * `:1272`).
+       *
+       * This plugin keeps its own nested subagent descendants underneath, which
+       * the shipped browser deliberately hides (`:358`). With no workspace list
+       * — Host baseline not ready, or a composition that does not provide the
+       * hook — the tree degrades to the previous flat layout rather than
+       * inventing a group.
+       */
+      const wsList = (opts && Array.isArray(opts.workspaces) ? opts.workspaces : EMPTY_ARR).filter(
+        (w) => w && w.workspaceId,
+      )
+      if (wsList.length > 0) {
+        const collapsed = (opts && opts.collapsedGroups) || null
+        // A session that has a parent IN THIS MAP is a descendant: it renders
+        // under that parent, never as a group root. The shipped browser never
+        // faces this because it hides every `origin:'subagent'` row (`:358`);
+        // this plugin shows them, and treating an unlisted child as a root is
+        // exactly what produced a 1000-row flat list before.
+        const isChild = (n) => !!(n.parentId && n.parentId !== n.id && node.has(n.parentId))
+        const groups = []
+        const accounted = new Set()
+        for (const w of wsList) {
+          const ids = Array.isArray(w.sessionIds) ? w.sessionIds : EMPTY_ARR
+          const members = []
+          for (const id of ids) {
+            const n = node.get(id)
+            if (!n) continue
+            // Accounted even when it is hidden by the archived filter or is a
+            // descendant, so it never reappears in Ungrouped.
+            accounted.add(id)
+            if (isChild(n)) continue
+            if (keep(id)) members.push(n)
+          }
+          // "Archived only" drops a workspace that would render empty; other
+          // modes keep the bare header, exactly as the shipped browser does.
+          if (archivedMode === 'only' && members.length === 0) continue
+          groups.push({
+            key: w.workspaceId,
+            label: workspaceLabel(w, t('ungrouped')),
+            path: typeof w.path === 'string' ? w.path : null,
+            members,
+            ungrouped: false,
+          })
+        }
+        const ungroupedMembers = []
+        for (const n of node.values()) {
+          if (!isChild(n) && !accounted.has(n.id) && keep(n.id)) ungroupedMembers.push(n)
+        }
+        // Reachability over the FULL graph, ignoring expansion and the archived
+        // filter — the same guard the flat layout uses. Marking only the members
+        // that survived the filter would promote every filtered-out session into
+        // a bogus Ungrouped root; marking from every top-level node leaves only
+        // real parent cycles.
+        const reachable = new Set()
+        const markReach = (id) => {
+          if (reachable.has(id)) return
+          reachable.add(id)
+          for (const c of kids.get(id) || EMPTY_ARR) markReach(c.id)
+        }
+        for (const n of node.values()) if (!isChild(n)) markReach(n.id)
+        for (const n of node.values()) {
+          if (reachable.has(n.id)) continue
+          ungroupedMembers.push(n)
+          markReach(n.id)
+        }
+        if (ungroupedMembers.length > 0) {
+          groups.push({
+            key: '',
+            label: t('ungrouped'),
+            path: null,
+            members: ungroupedMembers,
+            ungrouped: true,
+          })
+        }
+
+        const out2 = []
+        const seenG = new Set()
+        const walkG = (n, depth, gkey, sink) => {
+          if (!n || seenG.has(n.id) || depth > MAX_DEPTH + 1) return
+          seenG.add(n.id)
+          if (!keep(n.id)) return
+          // Every descendant of a group root belongs to that root's group, even
+          // when some other workspace also lists it: a node renders once.
+          const children = kids.get(n.id) || EMPTY_ARR
+          const expanded = expandedIds.has(n.id)
+          sink.push({
+            key: 'ws:' + gkey + '/' + n.id,
+            kind: n.origin === 'subagent' ? 'subagent' : 'session',
+            depth,
+            id: n.id,
+            parentId: n.parentId,
+            mode: n.mode,
+            label: labelFor(n),
+            labelIsFallback: isFallbackFor(n),
+            secondary: secondaryFor(n),
+            running: n.running,
+            state: sessionState(statuses, n.id, n.running),
+            tag: n.origin === 'subagent' ? t('subagent') : null,
+            expandable: children.length > 0,
+            expanded,
+            childCount: children.length,
+          })
+          if (!expanded) return
+          if (children.length === 0) {
+            if (catalogOnly.has(n.id) || n.catalog === null) return
+            sink.push({
+              key: 'ws:' + gkey + '/' + n.id + ':none',
+              kind: 'note',
+              depth: depth + 1,
+              id: n.id + ':none',
+              label: t('noChildren'),
+            })
+            return
+          }
+          let shown = 0
+          for (const c of children) {
+            if (shown >= MAX_CHILDREN) {
+              sink.push({
+                key: 'ws:' + gkey + '/' + n.id + ':more',
+                kind: 'note',
+                depth: depth + 1,
+                id: n.id + ':more',
+                label: t('more', { n: children.length - shown }),
+              })
+              break
+            }
+            shown++
+            walkG(c, depth + 1, gkey, sink)
+          }
+        }
+
+        for (const g of groups) {
+          const isCollapsed = !!(collapsed && collapsed.has(g.key))
+          out2.push({
+            key: 'ws:' + g.key,
+            kind: 'workspace',
+            depth: 0,
+            id: g.key,
+            label: g.label,
+            path: g.path,
+            ungrouped: g.ungrouped,
+            expanded: !isCollapsed,
+            expandable: true,
+            childCount: g.members.length,
+          })
+          if (isCollapsed) continue
+          if (g.members.length === 0) {
+            out2.push({
+              key: 'ws:' + g.key + ':empty',
+              kind: 'note',
+              depth: 1,
+              id: 'ws:' + g.key + ':empty',
+              label: t('empty'),
+            })
+            continue
+          }
+          // Search stays shallow and grouped: matching member rows only.
+          if (q !== '') {
+            for (const m of g.members) {
+              const label = labelFor(m)
+              if (!matches(label, m.id)) continue
+              out2.push({
+                key: 'ws:' + g.key + '/' + m.id,
+                kind: m.origin === 'subagent' ? 'subagent' : 'session',
+                depth: 1,
+                id: m.id,
+                parentId: m.parentId,
+                mode: m.mode,
+                label,
+                labelIsFallback: isFallbackFor(m),
+                secondary: secondaryFor(m),
+                running: m.running,
+                state: sessionState(statuses, m.id, m.running),
+                tag: m.origin === 'subagent' ? t('subagent') : null,
+                expandable: false,
+                expanded: false,
+              })
+            }
+            continue
+          }
+          // Members are already top-level by construction (see `isChild`), so
+          // each one is a root row of its group.
+          g.members.sort(byOrder)
+          for (const r of g.members) walkG(r, 1, g.key, out2)
+        }
+        return out2
+      }
+
       // Filter mode: flat and predictable — no expansion, no deep loading.
       if (q !== '') {
         for (const n of roots) {
@@ -491,9 +720,18 @@ window.__ModuleLoader__.load({
       // dsh-client-ui-workspace/lib/client.js:2808-2809.
       const archivedIds = useW((s) => (s && s.archivedSessionIds) || EMPTY_ARR) || EMPTY_ARR
       const pinnedIds = useW((s) => (s && s.pinnedSessionIds) || EMPTY_ARR) || EMPTY_ARR
+      // The Host's Workspace list — the ordered `WorkspaceView` array the shipped
+      // browser groups sessions by. Absent it (baseline not ready), the tree
+      // stays flat rather than inventing a group.
+      const workspaceItems = useW((s) => (s && s.items) || EMPTY_ARR) || EMPTY_ARR
 
       const [order, setOrder] = useState('updated')
       const [archivedMode, setArchivedMode] = useState('hide')
+      // Workspace groups start EXPANDED. Unlike the shipped browser — which
+      // collapses every group and only auto-expands the current one — the
+      // workspace level here is an added distinction, not a gate the operator
+      // must open before seeing any session.
+      const [collapsedGroups, setCollapsedGroups] = useState(() => new Set())
       const [menuOpen, setMenuOpen] = useState(false)
       const [rowMenu, setRowMenu] = useState(null)
       const [renameId, setRenameId] = useState(null)
@@ -628,6 +866,16 @@ window.__ModuleLoader__.load({
         },
         [expandedIds, ensureLoaded, ensureChildTitles],
       )
+
+      /** Fold/unfold one workspace group. Groups are keyed by workspaceId. */
+      const toggleGroup = useCallback((key) => {
+        setCollapsedGroups((prev) => {
+          const next = new Set(prev)
+          if (next.has(key)) next.delete(key)
+          else next.add(key)
+          return next
+        })
+      }, [])
 
       const openNode = useCallback(
         (row) => {
@@ -797,8 +1045,10 @@ window.__ModuleLoader__.load({
           archivedMode,
           pinned,
           titles: titleMap,
+          workspaces: workspaceItems,
+          collapsedGroups,
         }),
-        [byId, projectionsBySession, expandedIds, query, t, statuses, order, archives, archivedMode, pinned, titleMap],
+        [byId, projectionsBySession, expandedIds, query, t, statuses, order, archives, archivedMode, pinned, titleMap, workspaceItems, collapsedGroups],
       )
       /** Every parent id in the current map — the bound for "expand all". */
       const idsWithChildren = useMemo(() => {
@@ -891,6 +1141,34 @@ window.__ModuleLoader__.load({
           ? h('div', { className: 'st-note', style: { paddingLeft: 10 } }, query ? t('none') : t('empty'))
           : rows.map((row) => {
               if (row.kind === 'note') return h('div', { className: 'st-note', key: row.key }, row.label)
+              if (row.kind === 'workspace') {
+                return h(
+                  'div',
+                  {
+                    className: 'st-row st-group' + (row.ungrouped ? ' st-group-ungrouped' : ''),
+                    key: row.key,
+                    role: 'treeitem',
+                    'aria-expanded': row.expanded ? 'true' : 'false',
+                    style: { paddingLeft: 6 + row.depth * 13 },
+                    title: row.path || row.label,
+                    onClick: () => toggleGroup(row.id),
+                  },
+                  h('span', { className: 'st-twist' + (row.expanded ? ' st-open' : '') }, '\u25B6'),
+                  // Inline folder glyph: the shipped header uses a primitives icon,
+                  // and client plugins are forbidden to import those. Drawing the
+                  // same shape keeps the theme in charge via `currentColor`.
+                  h(
+                    'svg',
+                    { className: 'st-folder', viewBox: '0 0 16 16', 'aria-hidden': 'true', focusable: 'false' },
+                    h('path', { d: 'M1.5 3.2h4.2l1.5 1.9h7.3v7.7h-13z', fill: 'currentColor' }),
+                  ),
+                  h('span', { className: 'st-label' }, row.label),
+                  row.path && !row.ungrouped
+                    ? h('span', { className: 'st-group-path' }, row.path)
+                    : null,
+                  !row.expanded ? h('span', { className: 'st-count' }, String(row.childCount)) : null,
+                )
+              }
               return h(
                 'div',
                 {
@@ -1033,8 +1311,16 @@ window.__ModuleLoader__.load({
                 menuItem(t('archHide'), archivedMode === 'hide', () => setArchivedMode('hide')),
                 menuItem(t('archShow'), archivedMode === 'show', () => setArchivedMode('show')),
                 menuItem(t('archOnly'), archivedMode === 'only', () => setArchivedMode('only')),
-                menuItem(t('expandAll'), false, () => setExpandedIds(new Set(idsWithChildren))),
-                menuItem(t('collapseAll'), false, () => setExpandedIds(new Set())),
+                menuItem(t('expandAll'), false, () => {
+                  setExpandedIds(new Set(idsWithChildren))
+                  setCollapsedGroups(new Set())
+                }),
+                menuItem(t('collapseAll'), false, () => {
+                  setExpandedIds(new Set())
+                  setCollapsedGroups(
+                    new Set(workspaceItems.map((w) => w && w.workspaceId).filter(Boolean)),
+                  )
+                }),
                 menuItem(t('reloadTitles'), false, () => loadTitles()),
               )
             : null,

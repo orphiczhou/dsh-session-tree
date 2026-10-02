@@ -427,6 +427,24 @@ check('模块 id 等于包名', captured && captured.id === '@orphiczhou/dsh-ses
 
 let useStateSeed = null
 let useStateCalls = 0
+/**
+ * `expandedIds` 在 TreeView 里的 useState 调用序号（1 基，按调用顺序）。
+ * 它同时被 STATE_HOOK_COUNT 断言钉住：客户端一旦新增/移动 useState，
+ * 这条断言会直接报红，而不是让种子静默播到别的钩子上。
+ */
+const EXPANDED_IDS_HOOK = 9
+/** `collapsedGroups` 的钩子序号（1 基）；工作区分组用它折叠。 */
+const COLLAPSED_GROUPS_HOOK = 3
+/** TreeView 里 useState 的总数（client.js 中 grep 可得）。 */
+const STATE_HOOK_COUNT = 10
+/**
+ * 按【钩子位置】播种一个 Set 状态。
+ *
+ * 这里以前是按“第一个 Set 型初始值”自动匹配的。客户端加入 collapsedGroups
+ * （也是 `useState(() => new Set())`）之后，种子被静默播到了它身上，
+ * 十几条展开断言集体失效却看不出原因——所以改成显式位置。
+ */
+const seedSetAt = (index, ids) => () => (useStateCalls === index ? new Set(ids) : undefined)
 const React = {
   createElement: (type, props, ...children) => ({ type, props: props || {}, kids: children }),
   Component: class {
@@ -442,14 +460,8 @@ const React = {
         const replaced = useStateSeed(value)
         if (replaced !== undefined) return [replaced, () => {}]
       } else {
-        const isSetLike =
-          value !== null && typeof value === 'object' &&
-          typeof value.has === 'function' && typeof value.add === 'function' && typeof value.size === 'number'
-        if (isSetLike) {
-          const v = useStateSeed
-          useStateSeed = null
-          return [v, () => {}]
-        }
+        // 裸种子（例如直接赋一个 Set）在这里直接失败：它曾经能“碰巧”工作。
+        throw new Error('useStateSeed 必须是函数——请用 seedSetAt(EXPANDED_IDS_HOOK, ids)')
       }
     }
     return [value, () => {}]
@@ -599,6 +611,12 @@ function indentOf(row) {
 // ------------------------------------------------------------ test 1: default
 console.log('\n=== 测试 1：默认（全折叠）渲染 ===')
 const t1 = renderPanel(undefined)
+// 钩子位置是种子契约的一部分（见 EXPANDED_IDS_HOOK）。
+check(
+  '夹具：useState 钩子数量与 EXPANDED_IDS_HOOK 一致（钩子位置是种子契约）',
+  useStateCalls === STATE_HOOK_COUNT,
+  `${useStateCalls} 个 useState（期望 ${STATE_HOOK_COUNT}，expandedIds 在第 ${EXPANDED_IDS_HOOK} 位）`,
+)
 const rootCount = Object.values(byId).filter((s) => s.origin !== 'subagent').length
 check('无异常渲染', t1.rows.length > 0, `${t1.rows.length} 行`)
 check(
@@ -622,7 +640,7 @@ console.log(`  子节点最多的父会话: ${widest[0].slice(0, 20)}… 有 ${w
 
 // --------------------------------------------------------- test 2: expansion
 console.log('\n=== 测试 2：展开子节点最多的父会话 ===')
-const t2 = renderPanel(new Set([widest[0]]))
+const t2 = renderPanel(seedSetAt(EXPANDED_IDS_HOOK, [widest[0]]))
 check('展开后渲染出子行', t2.rows.length > t1.rows.length, `${t1.rows.length} → ${t2.rows.length} 行`)
 const d2 = t2.rows.map(indentOf)
 check('出现了更深的缩进层级', Math.max(...d2) > Math.min(...d2), JSON.stringify([...new Set(d2)].sort((a, b) => a - b)))
@@ -748,7 +766,7 @@ const byId8 = {
   'kid-one': { id: 'kid-one', parentId: 'root', origin: 'subagent' },
 }
 useStateCalls = 0
-useStateSeed = new Set(['root'])
+useStateSeed = seedSetAt(EXPANDED_IDS_HOOK, ['root'])
 const sink8 = []
 renderTree(
   registered({
@@ -790,12 +808,12 @@ const byId9 = {
   deep: { id: 'deep', parentId: 'leaf', origin: 'subagent', displayTitle: 'Deep', updatedAt: 1, projectionValues: {} },
 }
 for (const [name, seed, expectRows] of [
-  ['仅展开 root', new Set(['root']), 2],
-  ['展开 root+mid', new Set(['root', 'mid']), 3],
-  ['展开 root+mid+leaf', new Set(['root', 'mid', 'leaf']), 4],
+  ['仅展开 root', ['root'], 2],
+  ['展开 root+mid', ['root', 'mid'], 3],
+  ['展开 root+mid+leaf', ['root', 'mid', 'leaf'], 4],
 ]) {
   useStateCalls = 0
-  useStateSeed = seed
+  useStateSeed = seedSetAt(EXPANDED_IDS_HOOK, seed)
   const sink9 = []
   renderTree(
     registered({
@@ -821,7 +839,7 @@ for (const [name, seed, expectRows] of [
 }
 // 三层全展开时最深层缩进必须是 6 + 3*13 = 45
 useStateCalls = 0
-useStateSeed = new Set(['root', 'mid', 'leaf'])
+useStateSeed = seedSetAt(EXPANDED_IDS_HOOK, ['root', 'mid', 'leaf'])
 const sink9b = []
 renderTree(
   registered({
@@ -1230,7 +1248,7 @@ const byId17 = {
   },
 }
 useStateCalls = 0
-useStateSeed = new Set(['P'])
+useStateSeed = seedSetAt(EXPANDED_IDS_HOOK, ['P'])
 const sink17 = []
 renderTree(
   registered({
@@ -1260,11 +1278,140 @@ check('会话标题作为次要信息保留在 tooltip 里',
 check('顶层会话仍然显示标题',
   textOf(rowById.P) === '我是父会话标题', textOf(rowById.P))
 
+// ======================================== 测试 18：工作区分组（自带左栏的层级）
+console.log('\n=== 测试 18：工作区分组（归属取 workspace.sessionIds，不是 cwd）===')
+/** 进入新增用例前的断言条数 = 参考套件的 90 条（见测试 M 的自检）。 */
+const referenceChecks = coreChecks
+
+/**
+ * 自带浏览器按 `workspace.sessionIds` 归属会话，**不是**按 cwd
+ * （dsh-client-ui-workspace/lib/client.js:420-439 `groupByWorkspace`）。
+ * 下面每个会话都带 cwd，另外 Z1 的 cwd 指向 alpha 却不在任何 sessionIds 里，
+ * 专门用来钉住「不是按 cwd 分组」；未分组桶固定在最后。
+ */
+const WS_A = 'C:\\proj\\alpha'
+const WS_B = 'C:\\proj\\beta'
+const wsById = {
+  A1: { id: 'A1', displayTitle: 'A one', updatedAt: 50, cwd: WS_A, projectionValues: {} },
+  A2: { id: 'A2', displayTitle: 'A two', updatedAt: 40, cwd: WS_A, projectionValues: {} },
+  A1c: { id: 'A1c', parentId: 'A1', origin: 'subagent', displayTitle: 'A one child', updatedAt: 49, cwd: WS_A, projectionValues: {} },
+  B1: { id: 'B1', displayTitle: 'B one', updatedAt: 30, cwd: WS_B, projectionValues: {} },
+  Z1: { id: 'Z1', displayTitle: 'Z loose', updatedAt: 20, cwd: WS_A, projectionValues: {} },
+}
+const wsItem = (id, path, title, sessionIds) => ({
+  workspaceId: id,
+  path,
+  title,
+  sessionIds,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-02T00:00:00.000Z',
+})
+const itemA = wsItem('w-a', WS_A, 'Alpha', ['A1', 'A2'])
+const itemB = wsItem('w-b', WS_B, 'Beta', ['B1'])
+const wsSnap = { archivedSessionIds: [], pinnedSessionIds: [], items: [itemA, itemB] }
+const noItems = { archivedSessionIds: [], pinnedSessionIds: [] }
+const isGroupRow = (r) => String(r.props.className).includes('st-group')
+const seqOf = (rendered) =>
+  rendered.rows.map((r) => (isGroupRow(r) ? '[' + labelOf(r) + ']' : labelOf(r)))
+const countOf = (row) => {
+  const el = row.kids.find((k) => typeof k.props.className === 'string' && k.props.className === 'st-count')
+  return el ? el.kids.map((c) => c.text).join('') : null
+}
+
+const t18 = renderPanel(undefined, wsById, wsSnap)
+const g18 = t18.rows.filter(isGroupRow)
+check('两个 workspace + 一个未分组 = 3 个分组头', g18.length === 3, `${g18.length} 个`)
+check('分组顺序 = Host 的 items 顺序，未分组固定在最后',
+  JSON.stringify(g18.map(labelOf)) === JSON.stringify(['Alpha', 'Beta', '未分组']),
+  JSON.stringify(g18.map(labelOf)))
+check('分组头在 depth 0', g18.every((r) => indentOf(r) === 6), JSON.stringify(g18.map(indentOf)))
+check('工作区内的会话缩进一层（depth 1）',
+  t18.rows.filter((r) => !isGroupRow(r)).every((r) => indentOf(r) === 19),
+  JSON.stringify(t18.rows.filter((r) => !isGroupRow(r)).map(indentOf)))
+check('归属由 workspace.sessionIds 决定，而不是 cwd',
+  JSON.stringify(seqOf(t18)) ===
+    JSON.stringify(['[Alpha]', 'A one', 'A two', '[Beta]', 'B one', '[未分组]', 'Z loose']),
+  JSON.stringify(seqOf(t18)))
+
+// ★ 未被任何 workspace 收录的子会话必须挂在父会话下——把它当成根行，
+//   正是插件最初要修的「1200 行平铺」回归。
+const t18exp = renderPanel(seedSetAt(EXPANDED_IDS_HOOK, ['A1']), wsById, wsSnap)
+check('未被任何 workspace 收录的子会话仍挂在父会话下，而不是变成未分组的根行',
+  JSON.stringify(seqOf(t18exp)) ===
+    JSON.stringify(['[Alpha]', 'A one', 'A1c', 'A two', '[Beta]', 'B one', '[未分组]', 'Z loose']),
+  JSON.stringify(seqOf(t18exp)))
+const a1cRow = t18exp.rows.find((r) => labelOf(r) === 'A1c')
+check('子会话在分组内缩进两层（depth 2）', !!a1cRow && indentOf(a1cRow) === 32,
+  a1cRow ? String(indentOf(a1cRow)) : '(无)')
+
+// 折叠：分组头显示计数，组内会话消失
+const t18col = renderPanel(seedSetAt(COLLAPSED_GROUPS_HOOK, ['w-a']), wsById, wsSnap)
+check('折叠的分组隐藏其会话',
+  JSON.stringify(seqOf(t18col)) === JSON.stringify(['[Alpha]', '[Beta]', 'B one', '[未分组]', 'Z loose']),
+  JSON.stringify(seqOf(t18col)))
+check('折叠的分组头显示会话数，展开的不显示',
+  countOf(t18col.rows.find((r) => labelOf(r) === 'Alpha')) === '2' &&
+    countOf(t18col.rows.find((r) => labelOf(r) === 'Beta')) === null,
+  `Alpha=${countOf(t18col.rows.find((r) => labelOf(r) === 'Alpha'))} Beta=${countOf(t18col.rows.find((r) => labelOf(r) === 'Beta'))}`)
+check('折叠状态写进 aria-expanded',
+  t18col.rows.find((r) => labelOf(r) === 'Alpha').props['aria-expanded'] === 'false' &&
+    t18col.rows.find((r) => labelOf(r) === 'Beta').props['aria-expanded'] === 'true')
+
+// 分组顺序跟着 Host 的 items 走，不按名字或时间重排
+const t18rev = renderPanel(undefined, wsById, { ...wsSnap, items: [itemB, itemA] })
+check('分组顺序随 items 顺序变化（不做名称/时间排序）',
+  JSON.stringify(t18rev.rows.filter(isGroupRow).map(labelOf)) ===
+    JSON.stringify(['Beta', 'Alpha', '未分组']),
+  JSON.stringify(t18rev.rows.filter(isGroupRow).map(labelOf)))
+
+// 全部会话都被某个 workspace 收录时，不出现未分组
+const t18all = renderPanel(undefined, wsById, {
+  ...wsSnap,
+  items: [itemA, wsItem('w-b', WS_B, 'Beta', ['B1', 'Z1'])],
+})
+check('没有游离会话时不渲染未分组桶',
+  t18all.rows.filter(isGroupRow).length === 2,
+  JSON.stringify(t18all.rows.filter(isGroupRow).map(labelOf)))
+
+// 空 workspace：hide/show 下保留裸分组头；only 下丢弃
+const t18empty = renderPanel(undefined, wsById, {
+  ...wsSnap,
+  items: [itemA, wsItem('w-c', 'C:\\proj\\gamma', 'Gamma', [])],
+})
+check('hide 模式下空 workspace 仍渲染分组头',
+  JSON.stringify(t18empty.rows.filter(isGroupRow).map(labelOf)) ===
+    JSON.stringify(['Alpha', 'Gamma', '未分组']),
+  JSON.stringify(t18empty.rows.filter(isGroupRow).map(labelOf)))
+const notes18 = t18empty.sink.filter(
+  (e) => typeof e.props.className === 'string' && e.props.className === 'st-note',
+)
+check('空 workspace 组内给出空态说明', notes18.length === 1, `${notes18.length} 条`)
+const t18only = renderPanel((v) => (v === 'hide' ? 'only' : undefined), wsById, {
+  archivedSessionIds: ['B1'],
+  pinnedSessionIds: [],
+  items: [itemA, itemB],
+})
+check('only 模式下没有可见成员的 workspace 被丢弃',
+  JSON.stringify(t18only.rows.filter(isGroupRow).map(labelOf)) === JSON.stringify(['Beta']),
+  JSON.stringify(t18only.rows.filter(isGroupRow).map(labelOf)))
+
+// Host 基线未就绪（没有 items）时退回扁平布局，不凭空造分组
+const t18flat = renderPanel(undefined, wsById, noItems)
+check('没有 items 时退回扁平布局（不造分组）',
+  t18flat.rows.filter(isGroupRow).length === 0 && t18flat.rows.length === 4,
+  `${t18flat.rows.filter(isGroupRow).length} 个分组 / ${t18flat.rows.length} 行`)
+check('扁平布局下所有行仍在 depth 0',
+  t18flat.rows.every((r) => indentOf(r) === 6),
+  JSON.stringify(t18flat.rows.map(indentOf)))
+
 // ------------------------------------------------- 套件自检：90 项一条不少
 console.log('\n=== 测试 M：套件自检 ===')
+// 参考套件的 90 条一条不少：这里比的是“进入测试 18 之前”的条数，
+// 所以之后再加用例不需要改任何常量。
 check('夹具：参考套件的 90 项断言全部执行（无因条件缺失被跳过）',
-  coreChecks === REFERENCE_ASSERTIONS,
-  `参考套件对齐断言 ${coreChecks} 项 / 应为 ${REFERENCE_ASSERTIONS} 项`)
+  referenceChecks === REFERENCE_ASSERTIONS,
+  `进入新增用例前 ${referenceChecks} 项 / 参考套件 ${REFERENCE_ASSERTIONS} 项；` +
+    `含新增用例共 ${coreChecks} 项`)
 
 // ============================================ 附加阶段：真实会话库（可选、非判定）
 /**
@@ -1357,7 +1504,7 @@ function runLivePhase() {
       console.log('  实时数据里没有任何父子关系 → 跳过展开类检查')
       return
     }
-    const l2 = renderPanel(new Set([liveWidest[0]]), liveById, EMPTY_WS)
+    const l2 = renderPanel(seedSetAt(EXPANDED_IDS_HOOK, [liveWidest[0]]), liveById, EMPTY_WS)
     const liveKeys = l2.rows.map((r) => r.props.key)
     checkLive('实时数据没有重复的 React key', new Set(liveKeys).size === liveKeys.length,
       `${liveKeys.length} 行 / ${new Set(liveKeys).size} 个唯一 key`)
@@ -1372,6 +1519,47 @@ function runLivePhase() {
       const liveMore = l2.sink.filter((e) => typeof e.props.className === 'string' && e.props.className.includes('st-note'))
       checkLive('实时数据超过 300 个子节点时给出省略提示', liveMore.length > 0,
         liveMore.map((m) => m.kids.map((c) => c.text).join('')).join(' | '))
+    }
+
+    // 工作区分组在真实数据量下的不变量：每个顶层会话恰好出现一次。
+    // 真实 Host 用 `workspace.sessionIds` 给成员关系；这里把真实顶层会话切成
+    // 三组，并故意留两个不被任何 workspace 收录，用来驱动“未分组”桶。
+    const liveTop = Object.values(liveById).filter(
+      (s) => s && s.id && !(s.parentId && liveById[s.parentId]),
+    )
+    if (liveTop.length >= 4) {
+      const assigned = liveTop.slice(0, liveTop.length - 2)
+      const chunk = Math.max(1, Math.ceil(assigned.length / 3))
+      const liveItems = []
+      for (let i = 0; i < assigned.length; i += chunk) {
+        liveItems.push({
+          workspaceId: 'live-w' + liveItems.length,
+          path: 'C:\\live\\w' + liveItems.length,
+          title: 'W' + liveItems.length,
+          sessionIds: assigned.slice(i, i + chunk).map((s) => s.id),
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-02T00:00:00.000Z',
+        })
+      }
+      const l3 = renderPanel(undefined, liveById, {
+        archivedSessionIds: [],
+        pinnedSessionIds: [],
+        items: liveItems,
+      })
+      const l3groups = l3.rows.filter(isGroupRow)
+      const l3sessions = l3.rows.filter((r) => !isGroupRow(r))
+      const l3keys = l3sessions.map((r) => r.props.key)
+      checkLive('实时数据分组后渲染出 3 个 workspace + 1 个未分组',
+        l3groups.length === liveItems.length + 1,
+        `${l3groups.length} 个分组（workspace ${liveItems.length}）/ ${liveTop.length} 个顶层会话`)
+      checkLive('实时数据分组后每个顶层会话恰好出现一次',
+        l3sessions.length === liveTop.length && new Set(l3keys).size === l3keys.length,
+        `${l3sessions.length} 行 / ${new Set(l3keys).size} 个唯一 key / 顶层 ${liveTop.length}`)
+      checkLive('实时数据分组后分组头 depth 0、会话 depth 1',
+        l3groups.every((r) => indentOf(r) === 6) && l3sessions.every((r) => indentOf(r) === 19),
+        JSON.stringify([...new Set(l3.rows.map(indentOf))]))
+      checkLive('实时数据分组后没有行标签为空',
+        l3.rows.map(labelOf).every((l) => typeof l === 'string' && l.length > 0))
     }
   } catch (e) {
     console.log(`  实时阶段异常，已忽略（不影响夹具结果）：${(e && e.message) || e}`)

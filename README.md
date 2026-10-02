@@ -16,7 +16,8 @@ A DeepSeek Harness profile bundle that turns the left sidebar into a **session t
 
 | Feature | What it does |
 |---|---|
-| Tree view | Renders every session in the workspace, with `origin: 'subagent'` children nested under their durable parent (`parentId`), to arbitrary depth. |
+| Tree view | Renders every session, with `origin: 'subagent'` children nested under their durable parent (`parentId`), to arbitrary depth. |
+| Workspace grouping | Sessions are grouped under the workspaces the Host reports, one collapsible header per workspace showing its name, path, and — when collapsed — its session count. Membership follows `workspace.sessionIds`, exactly as the shipped browser decides it. Sessions no workspace accounts for collect under **Ungrouped**, always rendered last. |
 | Lazy expansion | Nodes start collapsed. Expanding one builds its subtree; indentation grows 13 px per depth level (8 levels maximum). |
 | Bounded fan-out | A node renders at most 300 child rows per level; the remainder is reported as an explicit `N more omitted` notice instead of being dropped silently. |
 | Four-state status dot | Per row: running (blue, pulsing), completed but not viewed yet (green), completed and viewed (gray), waiting for your answer (orange). Colours come from DSH theme tokens and follow the light/dark theme. |
@@ -24,7 +25,7 @@ A DeepSeek Harness profile bundle that turns the left sidebar into a **session t
 | Per-row `…` menu | Pin / unpin, rename (inline input: Enter commits, Esc cancels, blur commits), Fork, archive / unarchive. |
 | `↗` open aside | Opens a subagent conversation in the right sidebar as a `subagentchat` resource, in its own pane. |
 | New session | A `+` button in the header, which compensates for the shadowed built-in browser's own entry point. |
-| Search box | Filters rows by label or session id; while filtering, rows are shown flat (no expansion). |
+| Search box | Filters rows by label or session id. While filtering, matches stay grouped under their workspace headers. |
 | Collapsed-sidebar rail | When the sidebar is collapsed to its icon rail, renders a `≡` button that expands it again. |
 | `tree_send` tool | Host-side tool that delivers a message to any continuable subagent session in the tree, including a sibling. |
 
@@ -149,6 +150,7 @@ Failures are reported as thrown errors with a `tree_send:` prefix, for example `
 
 - **Seat.** The plugin occupies `sidebar.workspaces`, the left sidebar's single-occupant slot, at priority **-100**. The slot system elects the *lowest* priority for a single slot, and registering at an already-taken priority throws at load, which is why a distinct priority is required. The shipped `WorkspaceBrowser` sits at priority 0, so this plugin wins the seat while the built-in entry stays registered — disabling the plugin restores the built-in sidebar untouched.
 - **Data.** Everything comes from slot props (`useSessions`), not from Host RPC: `state.byId` gives one row per session, and `state.projectionsBySession` gives projection snapshots. Those rows already carry the lineage (`parentId` plus `origin: 'subagent'`) because the shipped sidebar deliberately hides `origin: 'subagent'` rows — the whole nested tree is already in the store, and this plugin simply stops hiding it. `subagentCatalog` is used as a supplement for children that have no row of their own.
+- **Workspaces.** The workspace list comes from the same standard prop the shipped browser reads, `useWorkspaces` → `state.items` (the Host's ordered workspace records). Membership is decided by `workspace.sessionIds` — **not** by `cwd`, which only gates attaching a session to a workspace — and sessions no workspace accounts for collect in a synthetic **Ungrouped** group, always last. That is the shipped browser's own grouping rule. Two deliberate differences: groups start **expanded** rather than collapsed, because the workspace level here is an added distinction rather than a gate you must open before seeing any session; and a session whose parent is present in the store is always rendered under that parent, never as a group root, which is what keeps a subagent that no workspace lists from flattening the view. With no workspace list (Host baseline not ready) the tree falls back to the previous flat layout instead of inventing a group.
 - **Titles.** The newest title is read from the Host on mount through `remote.session.list({})`, which reads every session fresh and carries each session's current `projections.values.title`. That matters because the client store's projection snapshot is loaded once per connection and can keep an early `fallback` title forever; the client-side `refreshProjections` is a no-op once that baseline is ready. Titles are re-read when you pick **Reload titles**.
 - **Opening.** Clicking a node reuses the shipped navigation (`openSession`), so the opened conversation is the ordinary one, with the ordinary header and composer.
 - **The Host half** registers one tool, `tree_send`. The tool definition is a plain object in the shape `defineTool()` produces, so `@deepseek-ai/dsh-tools` is not imported and is not a dependency.
