@@ -102,6 +102,43 @@ window.__ModuleLoader__.load({
 .st-rename{flex:1;min-width:0;font:inherit;font-size:13px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);padding:1px 4px;outline:none}
 `
 
+    /**
+     * Stylesheet identity, following the convention the shipped client packages
+     * use (`document.querySelector('style[data-plugin-css="…"]')`): the sheet
+     * lives in <head>, injected once, and is not part of the render output.
+     *
+     * History: this module used to render `h('style', null, CSS)` as a React child
+     * of the root div. That is a live DOM node owned by React reconciliation, and
+     * it went MISSING in a running page while the component tree itself stayed
+     * mounted — observed live: the markup and every `st-*` class were present, the
+     * `<body>` contained no `<style>` at all, and the unstyled inline folder SVG
+     * blew up to 262x262, breaking the whole tree layout. A stylesheet the shell
+     * renders must not depend on React keeping one child alive.
+     */
+    const STYLE_TAG = 'session-tree'
+    const STYLE_SELECTOR = 'style[data-plugin-css="' + STYLE_TAG + '"]'
+    /** True once the sheet is in <head>; the React child is only a fallback. */
+    let stylesInHead = false
+
+    /**
+     * Put the stylesheet in <head> once. Idempotent, and safe to call before the
+     * first render, so the tree never paints unstyled.
+     * @returns whether the sheet is in the head (false → caller should fall back).
+     */
+    function ensureStylesheet() {
+      try {
+        if (typeof document === 'undefined' || !document.head) return false
+        if (document.querySelector(STYLE_SELECTOR) !== null) return true
+        const el = document.createElement('style')
+        el.setAttribute('data-plugin-css', STYLE_TAG)
+        el.textContent = CSS
+        document.head.appendChild(el)
+        return true
+      } catch (e) {
+        return false
+      }
+    }
+
     const DICT = {
       en: {
         title: 'Sessions',
@@ -1167,7 +1204,7 @@ window.__ModuleLoader__.load({
                   // same shape keeps the theme in charge via `currentColor`.
                   h(
                     'svg',
-                    { className: 'st-folder', viewBox: '0 0 16 16', 'aria-hidden': 'true', focusable: 'false' },
+                    { className: 'st-folder', width: 13, height: 13, viewBox: '0 0 16 16', 'aria-hidden': 'true', focusable: 'false' },
                     h('path', { d: 'M1.5 3.2h4.2l1.5 1.9h7.3v7.7h-13z', fill: 'currentColor' }),
                   ),
                   h('span', { className: 'st-label' }, row.label),
@@ -1278,7 +1315,9 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { className: 'st-root' },
-        h('style', null, CSS),
+        // Fallback only: with a real document the sheet is already in <head>
+        // (see ensureStylesheet). Keeping this as a React child was the bug.
+        stylesInHead ? null : h('style', null, CSS),
         h(
           'div',
           { className: 'st-head' },
@@ -1570,6 +1609,10 @@ window.__ModuleLoader__.load({
       // same set (dsh-client-ui-subagent/lib/client.js:921-927).
       inject: ['slots', 'sessions', 'uiWorkspace', 'sidebarRight', 'locale'],
       apply(ctx) {
+        // Before anything renders: get the stylesheet into <head>, so the first
+        // paint of the tree is already styled. When there is no document (tests,
+        // SSR) this is false and the render falls back to an inline <style>.
+        stylesInHead = ensureStylesheet()
         let bound = null
         try {
           if (ctx.locale && typeof ctx.locale.register === 'function' && typeof ctx.locale.bind === 'function') {
