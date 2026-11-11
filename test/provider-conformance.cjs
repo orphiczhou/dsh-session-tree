@@ -22,8 +22,25 @@
  * of dsh-tools and is a three-field Error subclass; it is reproduced below.
  *
  * Usage:
- *   node test/provider-conformance.cjs [<asar-out-dir>]
- * Default asar-out dir: %TEMP%\dsh-asar-inspect\out
+ *   node test/provider-conformance.cjs [<rc2-fixture-dir>]
+ *
+ * The fixture is an unpacked DSH asar tree that must contain, under
+ * `<fixture>/dsh/node_modules/@deepseek-ai/`:
+ *   dsh-tools/lib/index.js        — with the `lib/types/json-schema.js` region INLINE
+ *   dsh-util-values/lib/index.js  — the shipped values bundle (no imports)
+ *
+ * Resolution order (the first usable candidate wins; an explicitly named candidate
+ * that is unusable fails immediately instead of silently falling through):
+ *   1. CLI argument          node test/provider-conformance.cjs <dir>
+ *   2. env DSH_RC2_FIXTURE_DIR
+ *   3. %TEMP%\dsh-asar-inspect\out-rc2-compat   (known rc.2-compatible layout)
+ *   4. %TEMP%\dsh-asar-inspect\out              (legacy default; newer DSH builds move
+ *                                                the engine to ./shared-*.js -> rejected)
+ *
+ * A missing / non-rc.2 fixture is a CONFIGURATION failure: exit code 2 with an
+ * actionable message (how to build the fixture), never a raw crash stack. Exit code 1
+ * means an assertion failed. The provenance, file list and SHA-256 of the rc.2 fixture
+ * used for the recorded 29/29 run are in docs/reports/conformance-rc2-2026-11-12.md.
  */
 'use strict'
 
@@ -33,13 +50,99 @@ const os = require('node:os')
 const { pathToFileURL } = require('node:url')
 
 const CLIENT = path.resolve(__dirname, '..', 'client.js')
-const OUT = process.argv[2] || path.join(os.tmpdir(), 'dsh-asar-inspect', 'out')
-const PKGS = path.join(OUT, 'dsh', 'node_modules', '@deepseek-ai')
+const FIXTURE_ENV = 'DSH_RC2_FIXTURE_DIR'
+const FIXTURE_SUBDIR = path.join('dsh', 'node_modules', '@deepseek-ai')
+const KNOWN_FIXTURE_DIRS = [
+  path.join(os.tmpdir(), 'dsh-asar-inspect', 'out-rc2-compat'),
+  path.join(os.tmpdir(), 'dsh-asar-inspect', 'out'),
+]
 
 let failures = 0
+let checks = 0
 const check = (name, ok, detail) => {
+  checks++
   if (!ok) failures++
   console.log(`${ok ? '  PASS' : '  FAIL'}  ${name}${detail === undefined ? '' : `  — ${detail}`}`)
+}
+
+// ------------------------------------------------------------- fixture discovery
+/** A configuration problem (missing / non-rc.2 fixture), not a test crash. */
+class FixtureError extends Error {}
+
+/**
+ * Classify one candidate directory. The contract the extractor below relies on is
+ * that the schema engine is INLINE in `dsh-tools/lib/index.js` (region marker plus
+ * `function validateJsonSchemaValue(`). Newer DSH builds re-export it from a split
+ * chunk (`./shared-*.js`), which this heuristic cannot lift, so they are reported
+ * as "not rc.2-compatible" up front instead of crashing mid-extraction.
+ */
+function probeFixture(dir) {
+  const pkgs = path.join(dir, FIXTURE_SUBDIR)
+  const tools = path.join(pkgs, 'dsh-tools', 'lib', 'index.js')
+  const utils = path.join(pkgs, 'dsh-util-values', 'lib', 'index.js')
+  const problems = []
+  if (!fs.existsSync(pkgs)) {
+    problems.push(`missing ${pkgs}`)
+  } else {
+    if (!fs.existsSync(tools)) problems.push(`missing ${tools}`)
+    if (!fs.existsSync(utils)) problems.push(`missing ${utils}`)
+  }
+  if (problems.length === 0) {
+    const lines = fs.readFileSync(tools, 'utf8').split(/\r?\n/)
+    const hasRegion = lines.includes('//#region lib/types/json-schema.js')
+    const hasValidator = lines.some((line) => line.startsWith('function validateJsonSchemaValue('))
+    const splitChunk = /from "\.\/shared-[^"]+\.js"/.test(lines.join('\n'))
+    if (!hasRegion || !hasValidator) {
+      problems.push(
+        'not rc.2-compatible: dsh-tools/lib/index.js has no inline "lib/types/json-schema.js" region' +
+          (splitChunk ? ' (newer build: the engine lives in ./shared-*.js)' : '') +
+          ` [region=${hasRegion}, validateJsonSchemaValue=${hasValidator}]`,
+      )
+    }
+  }
+  return { dir, pkgs, tools, utils, problems, ok: problems.length === 0 }
+}
+
+function fixtureHelp(probed) {
+  const lines = [
+    'fixture 缺失或不兼容 rc.2（missing or not rc.2-compatible）：',
+    '  provider-conformance 需要一份「rc.2 兼容」的 DSH asar 解包目录（内联 json-schema 引擎 + dsh-util-values）。',
+    '',
+    '已检查（checked）:',
+  ]
+  for (const p of probed) {
+    lines.push(`  - ${p.dir}  [${p.source}]`)
+    for (const problem of p.problems) lines.push(`      ${problem}`)
+  }
+  lines.push(
+    '',
+    '获取步骤（how to provide the fixture）:',
+    `  1) 解包 rc.2 版 DSH app.asar 的两个文件到 ${path.join(os.tmpdir(), 'dsh-asar-inspect', 'out-rc2-compat')}`,
+    `     node "${path.join(os.tmpdir(), 'dsh-asar-inspect', 'extract-fixture.cjs')}" "<rc.2 app.asar>" "${path.join(os.tmpdir(), 'dsh-asar-inspect', 'out-rc2-compat')}" "dsh/node_modules/@deepseek-ai/dsh-tools/lib/index.js" "dsh/node_modules/@deepseek-ai/dsh-util-values/lib/index.js"`,
+    '  2) 或指向已有的 rc.2 兼容目录（本次记录见 docs/reports/conformance-rc2-2026-11-12.md）:',
+    `     $env:${FIXTURE_ENV} = '<dir>'   # PowerShell；或 node test/provider-conformance.cjs <dir>`,
+    '  3) 若只有新版 DSH（引擎在 dsh-tools/lib/shared-*.js），在解包副本里把该 shared chunk 复制为 dsh-tools/lib/index.js',
+    '     （out-rc2-compat 就是这样构造的：逐字节 verbatim，不改安装目录本身）；',
+    '     单纯重跑不会成功，本脚本不会把缺 fixture 当成断言失败。',
+  )
+  return lines.join('\n')
+}
+
+function resolveFixture() {
+  const explicit = []
+  if (process.argv[2]) explicit.push({ source: 'CLI argument', dir: path.resolve(process.argv[2]) })
+  if (process.env[FIXTURE_ENV]) {
+    explicit.push({ source: `env ${FIXTURE_ENV}`, dir: path.resolve(process.env[FIXTURE_ENV]) })
+  }
+  for (const candidate of explicit) {
+    const probe = Object.assign(probeFixture(candidate.dir), { source: candidate.source })
+    if (probe.ok) return probe
+    throw new FixtureError(fixtureHelp([probe]))
+  }
+  const probed = KNOWN_FIXTURE_DIRS.map((dir) => Object.assign(probeFixture(dir), { source: 'known default' }))
+  const usable = probed.find((probe) => probe.ok)
+  if (usable) return usable
+  throw new FixtureError(fixtureHelp(probed))
 }
 
 // --------------------------------------------------------------- shipped engine
@@ -52,15 +155,15 @@ class HarnessError extends Error {
   }
 }
 
-function extractShippedEngine() {
-  const toolsSrc = fs.readFileSync(path.join(PKGS, 'dsh-tools', 'lib', 'index.js'), 'utf8')
+function extractShippedEngine(pkgs) {
+  const toolsSrc = fs.readFileSync(path.join(pkgs, 'dsh-tools', 'lib', 'index.js'), 'utf8')
   // The shipped bundle uses CRLF line terminators, so split on both.
   const lines = toolsSrc.split(/\r?\n/)
   const start = lines.indexOf('//#region lib/types/json-schema.js')
   const declaredAt = lines.findIndex((line) => line.startsWith('function validateJsonSchemaValue('))
   const end = declaredAt < 0 ? -1 : lines.indexOf('//#endregion', declaredAt)
   if (start < 0 || end < 0) {
-    const probe = path.join(PKGS, 'dsh-tools', 'lib', 'index.js')
+    const probe = path.join(pkgs, 'dsh-tools', 'lib', 'index.js')
     throw new Error(
       `json-schema region not found in dsh-tools (file=${probe}, bytes=${fs.statSync(probe).size}, ` +
         `lines=${lines.length}, start=${start}, declaredAt=${declaredAt}, end=${end})`,
@@ -73,7 +176,7 @@ function extractShippedEngine() {
   // shipped, instead of re-deriving the closure by hand (which silently loses a
   // helper the moment a function gains one).
   const utilsSrc = fs
-    .readFileSync(path.join(PKGS, 'dsh-util-values', 'lib', 'index.js'), 'utf8')
+    .readFileSync(path.join(pkgs, 'dsh-util-values', 'lib', 'index.js'), 'utf8')
     .replace(/^export \{[^}]*\};\s*$/m, '')
     .replace(/^\/\/#region .*$/gm, '')
     .replace(/^\/\/#endregion$/gm, '')
@@ -201,8 +304,10 @@ function loadClient() {
 
 async function main() {
   console.log('=== SessionTree inspect provider: conformance against the SHIPPED schema engine ===')
-  const engine = extractShippedEngine()
-  console.log(`  engine: loaded from ${path.join(PKGS, 'dsh-tools', 'lib', 'index.js')}`)
+  const fixtureDir = resolveFixture()
+  console.log(`  fixture: ${fixtureDir.dir} (source: ${fixtureDir.source})`)
+  const engine = extractShippedEngine(fixtureDir.pkgs)
+  console.log(`  engine: loaded from ${fixtureDir.tools}`)
   const rows = fixture()
   installBrowser(rows)
   globalThis.__CAPTURED_SESSION_TREE__ = null
@@ -337,11 +442,21 @@ async function main() {
   }
   check('an unsupported keyword would have been caught at publish time', badSchemaError !== null, badSchemaError && badSchemaError.message)
 
-  console.log(`\n==================== ${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`} ====================`)
+  const verdict =
+    failures === 0
+      ? `ALL CHECKS PASSED (${checks}/${checks})`
+      : `${failures} CHECK(S) FAILED (${checks - failures}/${checks})`
+  console.log(`\n==================== ${verdict} ====================`)
+  console.log(`fixture: ${fixtureDir.dir}`)
   process.exit(failures === 0 ? 0 : 1)
 }
 
 main().catch((error) => {
+  if (error instanceof FixtureError) {
+    // Configuration failure, not a crash: print the actionable message, no stack.
+    console.error(`\n[fixture] ${error.message}`)
+    process.exit(2)
+  }
   console.error('conformance run crashed:', error)
   process.exit(1)
 })
