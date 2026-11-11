@@ -8,7 +8,7 @@
 
 A DeepSeek Harness profile bundle that turns the left sidebar into a **session tree**: every session plus its nested subagent descendants, expandable to arbitrary depth, each node one click away from its multi-turn conversation. It also adds two Host tools: `tree_send`, which lets an agent message **any** continuable subagent session in the tree — including a sibling, which the built-in messaging APIs cannot reach — and `session_handoff`, which hands the current session off to a fresh successor at the **same level** before its context budget fills, carrying the same workspace, Agent preset, permission preset, model and reasoning effort.
 
-**Current release: v1.3.5.** Bundled `session-handoff` Skill since **v1.3.0**; the successor kickoff prompt follows the DSH interface language since **v1.3.1** (see [releases](https://github.com/orphiczhou/dsh-session-tree/tags)).
+**Current release: v1.3.6.** Bundled `session-handoff` Skill since **v1.3.0**; the successor kickoff prompt follows the DSH interface language since **v1.3.1** (see [releases](https://github.com/orphiczhou/dsh-session-tree/tags)).
 
 <!-- Screenshot placeholder: add a screenshot of the left sidebar tree here once one exists.
      Do not reference an image file that is not in the repository. -->
@@ -41,6 +41,9 @@ A DeepSeek Harness profile bundle that turns the left sidebar into a **session t
 DSH has **no central plugin marketplace** — there is no in-app store, no plugin index, and no publish API. A plugin is distributed as an ordinary package and discovered through its README; the install command below is the whole distribution mechanism. This repository *is* the listing.
 
 DSH installs plugins as **profile bundles**. The app's Plugins page (**Add plugin**) accepts four spec kinds: an npm package name, a Git URL, a tarball, or an absolute local path. This bundle ships as plain ESM with no build step, so any of the following works as-is.
+
+> **AI agent installing this plugin?** Read [AGENT-INSTALL.md](AGENT-INSTALL.md): install routes (this repo vs the monorepo-only `tree-engine` full stack), reload semantics, verification checklist and troubleshooting matrix.
+> **Want the full tree stack?** `tree-engine` (9 `tree_*` tools + 2 Skills) is not published here — see the [installation guide](https://github.com/orphiczhou/dsh-tree-harness/blob/master/docs/guides/install-guide.md) in the source repository.
 
 ### From the GUI
 
@@ -254,7 +257,7 @@ Skills are part of the plugin package, so they version and ship together with th
    - “交接完成后验收一下” / “verify the handoff” → the Skill's verification checklist (render `preset=`/`permission=`, successor reads the file, no `degraded`, `warnings[]` empty).
    - See the **smoke test** above before reading a `below-threshold` / `recent-handoff` refusal as a bug.
 4. **Language**: the successor's first message follows DSH's interface language (Settings → General → Language). `zh` → Chinese prompt, `en` → English prompt, any other stored language and no preference → English. `status`/`handoff` end with `lang=zh|en` and return `interface_language`.
-5. **Troubleshooting**: Skill missing → confirm the bundle patch row was loaded (disable → enable) and open a new session; the provider itself is built in. `unknown tool session_handoff` → the bundle is not enabled. The full user guide, including the companion `tree-commander` / `tree-worker` Skills from `@local/dsh-tree-engine`, lives in [`docs/skills-usage.md`](https://github.com/orphiczhou/dsh-tree-harness/blob/master/docs/skills-usage.md) (source repository, not shipped in this package).
+5. **Troubleshooting**: Skill missing → confirm the bundle patch row was loaded (disable → enable) and open a new session; the provider itself is built in. `unknown tool session_handoff` → the bundle is not enabled. The full user guide, including the companion `tree-commander` / `tree-worker` Skills from `@local/dsh-tree-engine`, lives in [`docs/guides/skills-usage.md`](https://github.com/orphiczhou/dsh-tree-harness/blob/master/docs/guides/skills-usage.md) (source repository, not shipped in this package).
 
 ## How it works
 

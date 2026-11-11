@@ -184,7 +184,7 @@ session_handoff status: context=18.7% (threshold 50%) pressure=186666/1000000 mo
 
 - **不需要上级批准**：`context_pct >= 50` 就是授权。
 - 交接一次就够，不要连环交接（5 分钟防重复会拦住；`force` 不能解决「该继续干活」的问题）。
-- `session_handoff` **不会**自动迁移 tree-engine 的 leaf owner（leaf owner 是会话 id）——树任务里的交接协调规则见 tree-commander / tree-worker SKILL。**注意**：`tree-commander` / `tree-worker` 由另一个包 `@local/dsh-tree-engine` 提供，不随本插件包发布；完整说明见源码仓 `dsh-tree-harness` 的 `docs/skills-usage.md`（https://github.com/orphiczhou/dsh-tree-harness/blob/master/docs/skills-usage.md）。
+- `session_handoff` **不会**自动迁移 tree-engine 的 leaf owner（leaf owner 是会话 id）——树任务里的交接协调规则见 tree-commander / tree-worker SKILL。**注意**：`tree-commander` / `tree-worker` 由另一个包 `@local/dsh-tree-engine` 提供，不随本插件包发布；完整说明见源码仓 `dsh-tree-harness` 的 `docs/guides/skills-usage.md`（https://github.com/orphiczhou/dsh-tree-harness/blob/master/docs/guides/skills-usage.md）。
 
 ## 9. 最小自检清单
 

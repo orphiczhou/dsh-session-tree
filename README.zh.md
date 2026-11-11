@@ -8,7 +8,7 @@
 
 一个 DeepSeek Harness 的 profile bundle：把左侧栏换成**会话树**——每个会话下面挂着它的 subagent 后代，可逐层展开、层数不限，点任意节点就能打开该会话的多轮对话。它还注册两个宿主工具：`tree_send` 让智能体能给树里**任意**一个可续聊的子会话发消息，包括内置通讯 API 够不到的**兄弟会话**；`session_handoff` 则让当前会话在上下文将满时自我交接给**同层级**的新会话，并继承同一个工作区、Agent 预设（工作模式）、权限模式、模型与思考等级。
 
-**当前版本：v1.3.5。** 随包 `session-handoff` Skill 自 **v1.3.0** 起；接替提示语跟随 DSH 界面语言自 **v1.3.1** 起（见 [releases](https://github.com/orphiczhou/dsh-session-tree/tags)）。
+**当前版本：v1.3.6。** 随包 `session-handoff` Skill 自 **v1.3.0** 起；接替提示语跟随 DSH 界面语言自 **v1.3.1** 起（见 [releases](https://github.com/orphiczhou/dsh-session-tree/tags)）。
 
 <!-- 截图占位：有截图后再放到这里。
      不要引用仓库里并不存在的图片文件。 -->
@@ -41,6 +41,9 @@
 DSH **没有中心化的插件市场**——没有应用内商店、没有插件索引、也没有发布 API。插件就是一个普通包，靠 README 被人发现；下面这条安装命令就是全部的传播方式。**这个仓库本身就是那份“上架信息”。**
 
 DSH 以 **profile bundle** 的形式安装插件。应用的 Plugins 页面（**Add plugin**）接受四种 spec：npm 包名、**Git URL**、tarball、绝对本地路径。本 bundle 是纯 ESM、不需要构建，下面几种方式都可以直接用。
+
+> **让 AI Agent 来装？** 看 [AGENT-INSTALL.md](AGENT-INSTALL.md)：两条安装路线（本仓 vs 仅 monorepo 可得的 `tree-engine` 全栈）、重载语义、验收清单、排障矩阵。
+> **要装完整树体系？** `tree-engine`（9 个 `tree_*` 工具 + 2 个 Skill）不在本仓发布——见源码仓的[安装指南](https://github.com/orphiczhou/dsh-tree-harness/blob/master/docs/guides/install-guide.md)。
 
 ### 图形界面安装
 
@@ -254,7 +257,7 @@ Skill 是插件包的一部分，与工具同版本发布：`package.json.files`
    - 「交接完验收一下」→ 按 Skill 的验收清单核对（`preset=`/`permission=`、接替首轮读文件、无 `degraded`、`warnings` 为空）。
    - 先看上面的**冒烟测试**：把 `below-threshold` / `recent-handoff` 当故障是新手最常见的误会。
 4. **语言**：接替会话首条消息跟随 DSH 界面语言（设置 → 通用 → 语言）。`zh` → 中文提示语，`en` → 英文，其它已存语言与未设置 → 英文；`status`/`handoff` 行尾带 `lang=zh|en`，返回对象含 `interface_language`。
-5. **排障**：目录里没有 Skill → 确认 bundle patch 行已重载（disable→enable）且会话是**新开**的；provider 本身内置。`unknown tool session_handoff` → bundle 未启用。完整用户指南（含配套 `tree-commander` / `tree-worker`，来自 `@local/dsh-tree-engine`）见源码仓 [`docs/skills-usage.md`](https://github.com/orphiczhou/dsh-tree-harness/blob/master/docs/skills-usage.md)（不随本插件包发布）。
+5. **排障**：目录里没有 Skill → 确认 bundle patch 行已重载（disable→enable）且会话是**新开**的；provider 本身内置。`unknown tool session_handoff` → bundle 未启用。完整用户指南（含配套 `tree-commander` / `tree-worker`，来自 `@local/dsh-tree-engine`）见源码仓 [`docs/guides/skills-usage.md`](https://github.com/orphiczhou/dsh-tree-harness/blob/master/docs/guides/skills-usage.md)（不随本插件包发布）。
 
 ## 实现要点
 
