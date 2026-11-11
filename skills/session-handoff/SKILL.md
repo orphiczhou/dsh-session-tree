@@ -178,7 +178,7 @@ session_handoff status: context=18.7% (threshold 50%) pressure=186666/1000000 mo
 | 层级 | 谁 | 交接后 |
 |---|---|---|
 | 根会话 | 用户主会话 | 新根会话接替，同一侧栏工作区 |
-| 指挥官（tree commander） | 树节点会话 | 兄弟接替；tree-engine 的 leaf owner 仍是旧会话，需要按 tree-commander SKILL 的协调规则上报，由 commander 用 `tree_node {action:"set-session"}` 重绑（见 tree-worker SKILL §4.3） |
+| 指挥官（tree commander） | 树节点会话 | 兄弟接替；tree-engine 的 leaf owner 仍是旧会话，需要按 tree-commander SKILL 的协调规则上报，由 leaf 的 creator/上级（通常是父 commander）用 `tree_node {action:"set-session"}` 重绑（`set-session` 只允许 creator/`added_by` 调用；交接者自己无权重绑自己的 leaf，见 tree-worker SKILL §4.3） |
 | worker（tree worker） | 树节点执行会话 | 同上；且 tree-engine 还有竹节接力（pct≥42 自报 → 引擎换会话），**先按竹节，50% 仍未等到接力再自主交接**（见 tree-worker SKILL） |
 | 普通子会话 | subagent / teammate | 同父兄弟接替，父会话可见 |
 

@@ -8,7 +8,7 @@
 
 一个 DeepSeek Harness 的 profile bundle：把左侧栏换成**会话树**——每个会话下面挂着它的 subagent 后代，可逐层展开、层数不限，点任意节点就能打开该会话的多轮对话。它还注册两个宿主工具：`tree_send` 让智能体能给树里**任意**一个可续聊的子会话发消息，包括内置通讯 API 够不到的**兄弟会话**；`session_handoff` 则让当前会话在上下文将满时自我交接给**同层级**的新会话，并继承同一个工作区、Agent 预设（工作模式）、权限模式、模型与思考等级。
 
-**当前版本：v1.3.3。** 随包 `session-handoff` Skill 自 **v1.3.0** 起；接替提示语跟随 DSH 界面语言自 **v1.3.1** 起（见 [releases](https://github.com/orphiczhou/dsh-session-tree/tags)）。
+**当前版本：v1.3.4。** 随包 `session-handoff` Skill 自 **v1.3.0** 起；接替提示语跟随 DSH 界面语言自 **v1.3.1** 起（见 [releases](https://github.com/orphiczhou/dsh-session-tree/tags)）。
 
 <!-- 截图占位：有截图后再放到这里。
      不要引用仓库里并不存在的图片文件。 -->
@@ -197,7 +197,7 @@ A  （顶层会话，由它来调用 tree_send）
 
 兄弟接替会话改走正常的进程内子会话委派路径，继承预设组成与权限范围，因此不需要工作区挂载：侧栏会把它渲染在父会话下面、与交接会话同层。
 
-**接替提示语的语言。** 接替会话读到的第一条指令跟随 DSH 界面语言，而不是写死的英文模板。工具读取 **设置 → 通用 → 语言** 存入的 `locale.preference`——先经活体 Loader 的 `locale` 条目，再经 profile 的 `cordis.patch.yml` / `cordis.yml`（宿主进程以 profile 目录为 cwd）——归一化到主语言子标签，对 `zh` 与 `en` 本地化提示语；其它已存语言回退英文，未存偏好时同样英文。交接文件正文保持英文规范文档，但「Successor instructions」块与提示语同语言，因此接替会话始终有一份稳定、可机检的文件。`status` / `handoff` 的渲染行尾带 `lang=zh|en`，返回对象含 `interface_language`，验证脚本无需解码接替会话日志即可断言（完整脚本在源码仓 dsh-tree-harness：[verify-kickoff-language.mjs](https://github.com/orphiczhou/dsh-tree-harness/blob/master/scripts/e2e/verify-kickoff-language.mjs)，不随本插件包发布）。
+**接替提示语的语言。** 接替会话读到的第一条指令跟随 DSH 界面语言，而不是写死的英文模板。工具读取 **设置 → 通用 → 语言** 存入的 `locale.preference`——先经活体 Loader 的 `locale` 条目，再经 profile 的 `cordis.patch.yml` / `cordis.yml`（宿主进程以 profile 目录为 cwd）——归一化到主语言子标签，对 `zh` 与 `en` 本地化提示语；其它已存语言回退英文，未存偏好时同样英文。交接文件正文保持英文规范文档，但「Successor instructions」块与提示语同语言，因此接替会话始终有一份稳定、可机检的文件。`status` / `handoff` 的渲染行尾带 `lang=zh|en`，返回对象含 `interface_language`——可直接断言这两处；独立验收脚本（源码仓 dsh-tree-harness：[verify-kickoff-language.mjs](https://github.com/orphiczhou/dsh-tree-harness/blob/master/scripts/e2e/verify-kickoff-language.mjs)，不随本插件包发布）会进一步解码接替会话首条 `user/message`，确认新会话实际读到什么。
 
 `threshold_pct`（默认 50）在未传 `force:true` 时拒绝过早交接；同一会话五分钟内的第二次交接也会被拒（`force:true` 同时绕过两道闸）。逃生口是显式的，绝不静默：
 
