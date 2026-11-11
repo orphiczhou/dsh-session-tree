@@ -30,6 +30,7 @@ A DeepSeek Harness profile bundle that turns the left sidebar into a **session t
 | Collapsed-sidebar rail | When the sidebar is collapsed to its icon rail, renders a `≡` button that expands it again. |
 | `tree_send` tool | Host-side tool that delivers a message to any continuable subagent session in the tree, including a sibling. |
 | `session_handoff` tool | Host-side tool that writes a `HANDOFF-*.md` recap and starts a fresh successor at the same level — a sibling under the same live parent for a child session, a new root session for a root (or when the parent is gone). The successor inherits the same working directory, sidebar workspace membership, Agent preset (`work mode`, and therefore the same tool set), permission preset (sandbox + approval), model and reasoning effort. |
+| Language-aware successor prompt | The first message the successor reads follows the DSH interface language (**Settings → General → Language**, `locale.preference`): Chinese for `zh`, English for `en`, English fallback for any other stored language and when no preference is stored. The recap file keeps a canonical English body plus the same localized instruction block; `status`/`handoff` render a trailing `lang=zh|en` and return `interface_language`. |
 | `SessionTree` inspect provider | Read-only Cordis Inspect provider that reports what the sidebar **actually rendered** — row order, level, indentation, geometry and computed styles — so an agent can inspect the live tree through `cordis_inspect_query` instead of asking you to read the screen. |
 | Bundled Skill (`session-handoff`) | Ships `skills/session-handoff/SKILL.md` and mounts it through the deployment's filesystem Skill provider, so a fresh agent discovers the handoff discipline (status → 50% threshold → recap file → successor → verification) from the Skill catalog instead of being told tool names. |
 
@@ -194,6 +195,8 @@ The successor level follows the caller's level:
 
 A sibling successor inherits the preset composition and permission scope through the normal in-process subagent delegation path instead (`subagents.startActivation` under the same live parent), which is why it needs no workspace attach: the sidebar renders it under that parent, at the same depth as the session that handed off.
 
+**Language of the kickoff message.** The successor's first message follows the DSH interface language instead of a hard-coded English template. The tool reads the `locale.preference` stored by **Settings → General → Language** — through the live Loader `locale` entry first, then through the profile's `cordis.patch.yml` / `cordis.yml` (the Host process runs with the profile directory as its cwd) — normalizes it to a primary subtag, and localizes the prompt for `zh` and `en`; any other stored language falls back to English, which is also what happens when no preference is stored. The recap file keeps its canonical English body and repeats the same localized instruction block, so the successor always has one stable, machine-checkable file. `status` and `handoff` render a trailing `lang=zh|en` and the returned object carries `interface_language`, so a verification script can assert the language without decoding the successor log (in this repository: `scripts/e2e/verify-kickoff-language.mjs`).
+
 `threshold_pct` (default 50) refuses an early handoff unless `force:true` is passed; a second handoff in the same session within five minutes is also refused (`force:true` bypasses both guards). Escape hatches are explicit, never silent:
 
 - `spawn:false` writes the recap file and starts nothing.
@@ -205,6 +208,17 @@ A sibling successor inherits the preset composition and permission scope through
 The package ships one Skill, `skills/session-handoff/SKILL.md`, and its `cordis.patch.yml` mounts the deployment's filesystem Skill provider (`@deepseek-ai/dsh-skill-filesystem`, `providerName: session-tree`, `includeDefaultRoots: false`) on that directory. The Skill's `whenToUse` is written for the way users actually talk — "continue", "running out of context", "hand off to a fresh session", "around 50%" — so a newly started agent finds the discipline in its Skill catalog without being handed a tool list. It covers the status check, the 50% rule, the parameter template for the recap, the root/sibling matrix, what the successor inherits, how to verify the handoff, and how to read `degraded`/`warnings`.
 
 Skills are part of the plugin package, so they version and ship together with the tools: `package.json.files` includes `skills`, and the same bundle patch layer that makes `session_handoff` available is what registers the Skill provider. A profile that composes no `@deepseek-ai/dsh-skill-filesystem` row still loads the plugin and the tools; only the catalog entry is absent.
+
+#### Using the bundled Skill
+
+1. **Install the bundle** (Git URL in Plugins → Add plugin): `https://github.com/orphiczhou/dsh-session-tree`. Reload the bundle entry once (disable → enable) if the Host half or the patch row changed.
+2. **Confirm the catalog**: start a new session and ask it to list its Skills — `session-handoff` must appear. Machine-check instead with a fresh session: its first `user/message` carries an `<available_skills>` block; the source repository ships `scripts/skill-e2e/collect-skills.mjs` for that.
+3. **Use plain language** — the Skill is found by intent, not by tool name:
+   - “继续干，快到上限就交接” / “hand off to a fresh session around 50%” → `status` first, then `handoff`.
+   - “写个交接文件，让新会话接着干” → a recap file plus a same-level successor.
+   - “交接完成后验收一下” → the Skill's verification checklist (render `preset=`/`permission=`, successor reads the file, no `degraded`, `warnings[]` empty).
+4. **Language**: the successor's first message follows DSH's interface language (Settings → General → Language). `zh` → Chinese prompt, `en` → English prompt, any other stored language and no preference → English. `status`/`handoff` end with `lang=zh|en` and return `interface_language`.
+5. **Troubleshooting**: Skill missing → confirm `@deepseek-ai/dsh-skill-filesystem` is in the profile and the bundle patch row was loaded (disable → enable). `unknown tool session_handoff` → the bundle is not enabled. The full user guide, including the companion `tree-commander` / `tree-worker` Skills, lives in the source repository: [`docs/skills-usage.md`](https://github.com/orphiczhou/dsh-tree-harness/blob/master/docs/skills-usage.md).
 
 ## How it works
 

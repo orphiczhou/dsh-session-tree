@@ -52,7 +52,7 @@
  *     returns a reply.
  *   - Two top-level sessions that share no parent address still have no path.
  */
-import { promises as fsp } from 'node:fs'
+import { promises as fsp, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 
@@ -698,12 +698,25 @@ function buildStatus(services, session, agent, thresholdPct) {
       successor_kind: plan.kind,
       recommended_action:
         isNumber(facts.pct) && facts.pct >= thresholdPct ? 'handoff' : 'continue',
+      interface_language: resolveSuccessorPromptLanguage(services),
       notes: facts.notes,
     }
   })()
 }
 
-function buildSuccessorPrompt({ facts, handoffPath }) {
+function buildSuccessorPrompt({ facts, handoffPath, language = 'en' }) {
+  if (language === 'zh') {
+    const origin = facts.sessionId || '上一个会话'
+    return [
+      `你是 ${origin} 的接替会话。上一个会话因上下文预算接近上限而把工作交棒给你。`,
+      '',
+      `请先读取交接文件：${handoffPath}`,
+      '',
+      '文件中记录了任务、当前状态、决策、变更文件、下一步与未决问题。',
+      '请从「下一步」继续推进：不要重做文件中已记为完成的工作，保持相同的工作目录与',
+      '模型/思考等级，并用一小段话说明你接下来要做什么。',
+    ].join('\n')
+  }
   const origin = facts.sessionId || 'the previous session'
   return [
     `You are the successor session for ${origin}, which handed off because its context budget is nearly full.`,
@@ -715,6 +728,109 @@ function buildSuccessorPrompt({ facts, handoffPath }) {
     'as done, keep the same working directory and model/effort, and begin by stating in one short',
     'paragraph what you will do next.',
   ].join('\n')
+}
+
+// ---------------------------------------------------------------------------
+// Interface language
+// ---------------------------------------------------------------------------
+
+/**
+ * The successor kickoff message is the first thing a new session reads, so it
+ * speaks the language of the DSH interface instead of always English.
+ *
+ * Source of truth, in order:
+ *   1. the live Loader entry `locale` (the package that owns the Language row):
+ *      `options.config.preference` or the running fiber's effective config; a
+ *      volatile reference is unwrapped through `get()`;
+ *   2. the profile files `cordis.patch.yml` / `cordis.yml` (the durable layer
+ *      the browser writes `locale.preference` into), so a composition without a
+ *      Loader service still follows the stored preference;
+ *   3. `en` — the documented DSH fallback and the historical behavior.
+ */
+const LOCALE_ENTRY_ID = 'locale'
+const LOCALIZED_PROMPT_LANGUAGES = new Set(['zh', 'en'])
+const PROFILES_CONFIG_FILES = ['cordis.patch.yml', 'cordis.yml']
+
+/** Map a BCP 47-style id to a prompt language; unknown ids fall back to English. */
+function normalizePromptLanguage(value) {
+  if (typeof value !== 'string') return null
+  const primary = value.trim().toLowerCase().split(/[-_]/)[0]
+  if (!primary) return null
+  return LOCALIZED_PROMPT_LANGUAGES.has(primary) ? primary : 'en'
+}
+
+/** Scan a Cordis config file for the `locale` entry's `preference` (YAML subset). */
+function scanLocalePreference(text) {
+  const lines = String(text).split(/\r?\n/)
+  let inLocaleEntry = false
+  for (const line of lines) {
+    if (/^-\s+/.test(line)) {
+      // A new top-level list item ends the previous entry.
+      inLocaleEntry =
+        /^-\s+id:\s*['"]?locale['"]?\s*(?:#.*)?$/.test(line) ||
+        /^-\s+name:\s*['"]?@deepseek-ai\/dsh-client-locale['"]?\s*(?:#.*)?$/.test(line)
+      continue
+    }
+    if (!inLocaleEntry) continue
+    const match = /^\s+preference:\s*(.*)$/.exec(line)
+    if (!match) continue
+    const raw = match[1].replace(/\s+#.*$/, '').trim().replace(/^['"]|['"]$/g, '')
+    if (raw) return raw
+  }
+  return null
+}
+
+/** Read the DSH interface language preference, or `null` when none is stored. */
+function readLocalePreference(services) {
+  try {
+    const loader =
+      typeof services?.get === 'function' ? services.get('loader') : services?.loader
+    if (loader && typeof loader.resolve === 'function') {
+      const candidates = []
+      try {
+        candidates.push(loader.resolve(LOCALE_ENTRY_ID))
+      } catch {
+        // The entry may live inside a bundle subtree; scan by package name below.
+      }
+      if (typeof loader.entries === 'function') {
+        for (const entry of loader.entries()) {
+          if (entry?.options?.name === '@deepseek-ai/dsh-client-locale') candidates.push(entry)
+        }
+      }
+      for (const entry of candidates) {
+        const raw = entry?.options?.config
+        let preference = raw?.preference
+        if (preference && typeof preference.get === 'function') preference = preference.get()
+        if (typeof preference === 'string' && preference.trim()) return preference.trim()
+        let effective = entry?.fiber?.effectiveConfig?.preference
+        if (effective && typeof effective.get === 'function') effective = effective.get()
+        if (typeof effective === 'string' && effective.trim()) return effective.trim()
+      }
+    }
+  } catch {
+    // The loader service is not composed in every deployment; fall through.
+  }
+  // The Host process runs with the profile directory as its cwd (tree-engine's
+  // relative dataDir proves it), and this app does not export DSH_PROFILE_DIR.
+  const profileDirs = []
+  if (process.env.DSH_PROFILE_DIR) profileDirs.push(process.env.DSH_PROFILE_DIR)
+  profileDirs.push(process.cwd())
+  for (const profileDir of profileDirs) {
+    for (const fileName of PROFILES_CONFIG_FILES) {
+      try {
+        const preference = scanLocalePreference(readFileSync(path.join(profileDir, fileName), 'utf8'))
+        if (preference) return preference
+      } catch {
+        // The file is optional; try the next source.
+      }
+    }
+  }
+  return null
+}
+
+/** Prompt language for the successor kickoff: DSH interface language → `zh`/`en`. */
+function resolveSuccessorPromptLanguage(services) {
+  return normalizePromptLanguage(readLocalePreference(services)) ?? 'en'
 }
 
 function bulletList(items) {
@@ -736,7 +852,7 @@ function normalizeDetails(args) {
 }
 
 /** Deterministic recap template: task / status / decisions / files / next / open questions / origin. */
-function renderHandoffFile({ facts, details, handoffPath, stamp, nowIso, thresholdPct, workspace }) {
+function renderHandoffFile({ facts, details, handoffPath, stamp, nowIso, thresholdPct, workspace, language = 'en' }) {
   const contextLine = isNumber(facts.pct)
     ? `${round1(facts.pct)}% of ${facts.contextWindow} tokens (threshold ${thresholdPct}%)`
     : UNAVAILABLE
@@ -791,7 +907,7 @@ function renderHandoffFile({ facts, details, handoffPath, stamp, nowIso, thresho
     `- generated_at: ${nowIso}`,
     '',
     '## Successor instructions',
-    buildSuccessorPrompt({ facts, handoffPath }),
+    buildSuccessorPrompt({ facts, handoffPath, language }),
     '',
   ].join('\n')
 }
@@ -949,7 +1065,7 @@ function renderSummary(args, value) {
         ` model=${value.provider}/${value.model} effort=${value.reasoning_effort}` +
         ` preset=${value.agent_preset} permission=${permission}` +
         ` successor=${value.successor_available ? value.successor_kind : 'unavailable'}` +
-        ` next=${value.recommended_action}`,
+        ` next=${value.recommended_action} lang=${value.interface_language}`,
     )
   }
   if (value.status === 'rejected') {
@@ -960,7 +1076,9 @@ function renderSummary(args, value) {
     )
   }
   if (value.status === 'file-only') {
-    return oneLine(`session_handoff: wrote ${value.handoff_path} (no successor spawned)`)
+    return oneLine(
+      `session_handoff: wrote ${value.handoff_path} (no successor spawned; lang=${value.interface_language})`,
+    )
   }
   if (value.status === 'handed-off') {
     const successor = value.successor || {}
@@ -971,7 +1089,8 @@ function renderSummary(args, value) {
     return oneLine(
       `session_handoff: wrote ${value.handoff_path}; successor ${successor.session_id} ` +
         `kind=${successor.kind}${value.degraded ? ` degraded=${value.degraded}` : ''} ` +
-        `preset=${successor.agent_preset}${workspace} inherited=${successor.inherited}`,
+        `preset=${successor.agent_preset}${workspace} inherited=${successor.inherited} ` +
+        `lang=${value.interface_language}`,
     )
   }
   if (value.spawn_error) {
@@ -1161,7 +1280,8 @@ export function makeExecute(services, options = {}) {
     const stamp = formatStamp(new Date(nowMs))
     const fileName = `HANDOFF-${shortSessionId(facts.sessionId)}-${stamp}.md`
     const handoffPath = path.resolve(facts.cwd, fileName)
-    const prompt = buildSuccessorPrompt({ facts, handoffPath })
+    const language = resolveSuccessorPromptLanguage(services)
+    const prompt = buildSuccessorPrompt({ facts, handoffPath, language })
     const workspace = await resolveWorkspace(services, facts.cwd)
     const content = renderHandoffFile({
       facts,
@@ -1171,6 +1291,7 @@ export function makeExecute(services, options = {}) {
       nowIso: new Date(nowMs).toISOString(),
       thresholdPct,
       workspace,
+      language,
     })
     try {
       await fsp.mkdir(facts.cwd, { recursive: true })
@@ -1195,6 +1316,7 @@ export function makeExecute(services, options = {}) {
       agent_preset: facts.agentPreset || UNAVAILABLE,
       permission: facts.permission || UNAVAILABLE,
       workspace: workspace || { workspace_id: UNAVAILABLE, path: UNAVAILABLE },
+      interface_language: language,
       warnings,
     }
 

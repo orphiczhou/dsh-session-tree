@@ -124,6 +124,7 @@ session_handoff status: context=18.7% (threshold 50%) pressure=186666/1000000 mo
 - 模型 `provider/model`；
 - 思考等级 `reasoningEffort`；
 - `maxTokens`（**只在 handoff 成功返回对象的 `successor.max_tokens` 里可见**；`status` 行不报它）。
+- **接替提示语语言 = DSH 界面语言**（Settings → General → Language，`locale.preference`）：`zh` 时首条消息是「你是 <源会话> 的接替会话……请先读取交接文件：<绝对路径>」，`en` 时是 "You are the successor session … First read the handoff file at: <path>"；其它语言回退英文。`status`/`handoff` 渲染行尾带 `lang=zh|en`，返回对象的 `interface_language` 同值——这就是核对接替语种的直接证据，不必去猜。
 
 验收三步：
 
@@ -134,7 +135,7 @@ session_handoff status: context=18.7% (threshold 50%) pressure=186666/1000000 mo
    - `status` 行的 `preset=` / `permission=` 应为真实值（不是 `unavailable`）；
    - root 路径应出现 `workspace=`（宿主装配了 workspaceRegistry 时）；出现 `degraded=` 说明层级降级；
    - `inherited=session-route` = 模型/effort 来自本会话；`inherited=provider-default` = 原会话读不到模型配置，新会话用了部署默认（要告知用户，不能当成继承成功）。
-2. **看接替会话首轮**：它收到的首条消息必含 `First read the handoff file at: <绝对路径>`。打开/轮询该会话，确认它**真的读了这个文件**并开始推进，而不是只回一句 READY/OK。若它没有读文件能力或没读——说明预设/权限继承不完整，按 §6 处理。
+2. **看接替会话首轮**：它收到的首条消息必含交接文件的**绝对路径**，措辞随界面语言（中文「请先读取交接文件：<路径>」/ 英文「First read the handoff file at: <路径>」，见 §5 首条语言说明）。打开/轮询该会话，确认它**真的读了这个文件**并开始推进，而不是只回一句 READY/OK。若它没有读文件能力或没读——说明预设/权限继承不完整，按 §6 处理。
 3. **查结构化失败字段**：工具返回对象里还有 `warnings[]`、`successor.preset_error` / `permission_error` / `working_directory_error`、`successor.workspace.reason`。模型面渲染行是精简版，**不一定显示这些**；因此看到以下任一情况都按「继承不完整」处理并向用户报告：
    - `preset=unavailable` 或 `permission=unavailable`；
    - root 路径没有 `workspace=`；

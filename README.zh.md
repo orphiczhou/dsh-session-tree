@@ -30,6 +30,7 @@
 | 折叠后的侧栏 | 左栏被折叠成图标条时渲染一个 `≡` 按钮，点击即可展开侧栏。 |
 | `tree_send` 工具 | 宿主半工具：向树里任意可续聊的子会话投递消息，兄弟会话也可以。 |
 | `session_handoff` 工具 | 宿主半工具：写下 `HANDOFF-*.md` 交接文件，并启动**同层级**接替会话——子会话在同一个活着的父会话下生成兄弟，根会话（或父已不在）生成新根会话。接替会话继承同一个工作目录与侧栏工作区归属、同一个 Agent 预设（工作模式，因此工具集相同）、同一个权限模式（沙箱 + 审批）、同一个模型与思考等级。 |
+| 接替提示跟随界面语言 | 接替会话读到的第一条指令跟随 DSH 界面语言（**设置 → 通用 → 语言**，`locale.preference`）：`zh` 用中文、`en` 用英文；其它已存语言与未存偏好时回退英文。交接文件正文保持英文规范文档，但其中的「Successor instructions」块与提示语同语言；`status`/`handoff` 渲染行尾带 `lang=zh|en`，返回对象含 `interface_language`，脚本可不解析接替会话日志直接断言。 |
 | `SessionTree` 检视 provider | 只读的 Cordis Inspect provider：回报左栏**实际渲染成了什么**——行序、层级、缩进、几何与计算样式——让 agent 用已有的 `cordis_inspect_query` 自己看真实应用里的树，而不必让你念屏幕。 |
 | 随包 Skill（`session-handoff`） | 包内自带 `skills/session-handoff/SKILL.md`，并通过宿主的 filesystem Skill provider 挂载：新会话从 Skill 目录就能发现交接纪律（status → 50% 阈值 → 写交接文件 → 启动接替 → 验收），不需要别人先把工具名喂给它。 |
 
@@ -194,6 +195,8 @@ A  （顶层会话，由它来调用 tree_send）
 
 兄弟接替会话改走正常的进程内子会话委派路径，继承预设组成与权限范围，因此不需要工作区挂载：侧栏会把它渲染在父会话下面、与交接会话同层。
 
+**接替提示语的语言。** 接替会话读到的第一条指令跟随 DSH 界面语言，而不是写死的英文模板。工具读取 **设置 → 通用 → 语言** 存入的 `locale.preference`——先经活体 Loader 的 `locale` 条目，再经 profile 的 `cordis.patch.yml` / `cordis.yml`（宿主进程以 profile 目录为 cwd）——归一化到主语言子标签，对 `zh` 与 `en` 本地化提示语；其它已存语言回退英文，未存偏好时同样英文。交接文件正文保持英文规范文档，但「Successor instructions」块与提示语同语言，因此接替会话始终有一份稳定、可机检的文件。`status` / `handoff` 的渲染行尾带 `lang=zh|en`，返回对象含 `interface_language`，验证脚本无需解码接替会话日志即可断言（本仓脚本：`scripts/e2e/verify-kickoff-language.mjs`）。
+
 `threshold_pct`（默认 50）在未传 `force:true` 时拒绝过早交接；同一会话五分钟内的第二次交接也会被拒（`force:true` 同时绕过两道闸）。逃生口是显式的，绝不静默：
 
 - `spawn:false` 只写交接文件，不启动任何会话。
@@ -205,6 +208,17 @@ A  （顶层会话，由它来调用 tree_send）
 本包自带一个 Skill：`skills/session-handoff/SKILL.md`；`cordis.patch.yml` 的第二条 insert 把宿主的 filesystem Skill provider（`@deepseek-ai/dsh-skill-filesystem`，`providerName: session-tree`，`includeDefaultRoots: false`）挂到该目录。Skill 的 `whenToUse` 按用户真实说法编写——「继续干」「快到上限了」「交接给新会话」「上下文 50%」——所以**新开的 agent 从 Skill 目录就能发现交接纪律**，不需要别人先把工具名喂给它。正文覆盖：status 检查、50% 规则、交接文件参数模板、root/sibling 层级矩阵、接替会话继承什么、如何验收、`degraded`/`warnings` 怎么读。
 
 Skill 是插件包的一部分，与工具同版本发布：`package.json.files` 包含 `skills`，注册 Skill provider 的正是本 bundle 的 patch 行。若某个组合根本没有 `@deepseek-ai/dsh-skill-filesystem` 这一行，插件与工具照常工作，只是 Skill 目录里少这一条。
+
+#### 怎么用这个随包 Skill
+
+1. **安装**：Plugins → Add plugin → Git URL `https://github.com/orphiczhou/dsh-session-tree`；宿主半或 patch 行有变化时，对 bundle 条目做一次 disable→enable。
+2. **确认目录**：新开会话问「你看到的 Skill 有哪些」，应含 `session-handoff`；也可机检该会话首条 `user/message` 的 `<available_skills>`（本仓脚本 `scripts/skill-e2e/collect-skills.mjs`）。
+3. **用人话触发**（不必点名工具）：
+   - 「继续干，快到上限就交接」/「上下文 50% 了，交接给新会话」→ 先 `status`，≥50% 再 `handoff`；
+   - 「写个交接文件，让新会话接着干」→ 写交接文件并启动同层级接替；
+   - 「交接完验收一下」→ 按 Skill 的验收清单核对（`preset=`/`permission=`、接替首轮读文件、无 `degraded`、`warnings` 为空）。
+4. **语言**：接替会话首条消息跟随 DSH 界面语言（设置 → 通用 → 语言）。`zh` → 中文提示语，`en` → 英文，其它已存语言与未设置 → 英文；`status`/`handoff` 行尾带 `lang=zh|en`，返回对象含 `interface_language`。
+5. **排障**：目录里没有 Skill → 查 profile 是否有 `@deepseek-ai/dsh-skill-filesystem`、patch 行是否已重载；`unknown tool session_handoff` → bundle 未启用。完整用户指南（含配套 `tree-commander` / `tree-worker`）见本仓 [`docs/skills-usage.md`](https://github.com/orphiczhou/dsh-tree-harness/blob/master/docs/skills-usage.md)。
 
 ## 实现要点
 

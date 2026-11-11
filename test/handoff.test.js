@@ -16,12 +16,22 @@
  * successors, the new `status` fields, and the explicit preset-mount /
  * workspace-attach failure reporting.
  */
-import { test } from 'node:test'
+import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { promises as fsp } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { apply, makeExecute, HANDOFF_TOOL } from '../index.js'
+
+// Locale resolution must not depend on the developer's real DSH profile: the
+// test process runs inside DSH, where DSH_PROFILE_DIR points at a profile whose
+// Language row is whatever the user picked. Start every test from "no stored
+// preference" (English) and let the locale cases opt in explicitly.
+const SAVED_PROFILE_DIR = process.env.DSH_PROFILE_DIR
+delete process.env.DSH_PROFILE_DIR
+after(() => {
+  if (SAVED_PROFILE_DIR !== undefined) process.env.DSH_PROFILE_DIR = SAVED_PROFILE_DIR
+})
 
 const PARENT_ID = 'session-parent-00000000'
 
@@ -1026,5 +1036,146 @@ test('handoff：setup 中 workingDirectory.set 抛错 → 交接仍成功，warn
   assert.match(String(result.successor.working_directory_error), /boom-working-directory/)
   const warnings = Array.isArray(result.warnings) ? result.warnings.join(' | ') : ''
   assert.match(warnings, /workingDirectory\.set failed/i)
+})
+
+// ===========================================================================
+// Interface language: the successor kickoff message follows DSH's Language row
+// ===========================================================================
+
+/** A `services.get` stand-in exposing a Loader whose `locale` entry has `preference`. */
+function loaderWithPreference(preference) {
+  return (name) =>
+    name === 'loader'
+      ? { resolve: (id) => (id === 'locale' ? { options: { config: { preference } } } : undefined) }
+      : undefined
+}
+
+/** Remove DSH_PROFILE_DIR for a test so the environment cannot leak a preference. */
+function withoutProfileDir(t) {
+  const previous = process.env.DSH_PROFILE_DIR
+  delete process.env.DSH_PROFILE_DIR
+  t.after(() => {
+    if (previous === undefined) delete process.env.DSH_PROFILE_DIR
+    else process.env.DSH_PROFILE_DIR = previous
+  })
+}
+
+test('interface language: locale.preference=zh-CN (Loader) → status lang=zh and Chinese kickoff prompt', async (t) => {
+  const cwd = await makeWorkspace(t)
+  const { services, calls } = makeServices({ get: loaderWithPreference('zh-CN') })
+  const session = makeSession({ cwd, config: DEFAULT_CONFIG })
+  const execute = makeExecute(services)
+
+  const status = await execute({ action: 'status' }, makeExec(session))
+  assert.equal(status.interface_language, 'zh')
+  const statusText = HANDOFF_TOOL.output.render({ action: 'status' }, status)[0].text
+  assert.match(statusText, /lang=zh/)
+
+  const result = await execute({ action: 'handoff', summary: 'Chinese handoff' }, makeExec(session))
+  assert.equal(result.status, 'handed-off')
+  assert.equal(result.interface_language, 'zh')
+  const kickoff = calls.followup[0].message.content[0].text
+  assert.ok(kickoff.includes('接替会话'), 'kickoff prompt must speak Chinese')
+  assert.ok(kickoff.includes('请先读取交接文件'))
+  assert.ok(kickoff.includes(result.handoff_path))
+  const file = await fsp.readFile(result.handoff_path, 'utf8')
+  assert.ok(file.includes('请先读取交接文件'), 'the recap file repeats the same language')
+})
+
+test('interface language: a volatile preference reference is unwrapped', async (t) => {
+  const cwd = await makeWorkspace(t)
+  const { services } = makeServices({
+    get: loaderWithPreference({ get: () => 'zh' }),
+  })
+  const session = makeSession({ cwd, config: DEFAULT_CONFIG })
+  const execute = makeExecute(services)
+
+  const status = await execute({ action: 'status' }, makeExec(session))
+  assert.equal(status.interface_language, 'zh')
+})
+
+test('interface language: preference=ja falls back to English (the DSH fallback)', async (t) => {
+  const cwd = await makeWorkspace(t)
+  const { services, calls } = makeServices({ get: loaderWithPreference('ja') })
+  const session = makeSession({ cwd, config: DEFAULT_CONFIG })
+  const execute = makeExecute(services)
+
+  const result = await execute({ action: 'handoff', summary: 'Fallback handoff' }, makeExec(session))
+  assert.equal(result.interface_language, 'en')
+  assert.match(calls.followup[0].message.content[0].text, /You are the successor session/)
+})
+
+test('interface language: no stored preference → English prompt (previous behavior)', async (t) => {
+  withoutProfileDir(t)
+  const cwd = await makeWorkspace(t)
+  const { services, calls } = makeServices()
+  const session = makeSession({ cwd, config: DEFAULT_CONFIG })
+  const execute = makeExecute(services)
+
+  const result = await execute({ action: 'handoff', summary: 'Default handoff' }, makeExec(session))
+  assert.equal(result.interface_language, 'en')
+  const kickoff = calls.followup[0].message.content[0].text
+  assert.match(kickoff, /You are the successor session/)
+  assert.match(kickoff, /read the handoff file/i)
+})
+
+test('interface language: profile cordis.patch.yml preference is honored without a Loader service', async (t) => {  const cwd = await makeWorkspace(t)
+  const profile = await fsp.mkdtemp(path.join(os.tmpdir(), 'dsh-profile-'))
+  t.after(async () => {
+    await fsp.rm(profile, { recursive: true, force: true })
+  })
+  await fsp.writeFile(
+    path.join(profile, 'cordis.patch.yml'),
+    [
+      '- id: other',
+      '  name: "@deepseek-ai/other"',
+      '  config:',
+      '    preference: en',
+      '- id: locale',
+      '  name: "@deepseek-ai/dsh-client-locale"',
+      '  config:',
+      '    preference: zh',
+      '',
+    ].join('\n'),
+    'utf8',
+  )
+  const previous = process.env.DSH_PROFILE_DIR
+  process.env.DSH_PROFILE_DIR = profile
+  t.after(() => {
+    if (previous === undefined) delete process.env.DSH_PROFILE_DIR
+    else process.env.DSH_PROFILE_DIR = previous
+  })
+
+  const { services, calls } = makeServices()
+  const session = makeSession({ cwd, config: DEFAULT_CONFIG })
+  const execute = makeExecute(services)
+  const result = await execute({ action: 'handoff', summary: 'Profile-driven handoff' }, makeExec(session))
+
+  assert.equal(result.interface_language, 'zh')
+  assert.ok(calls.followup[0].message.content[0].text.includes('接替会话'))
+})
+
+test('interface language: profile files in process.cwd() are honored (host cwd = profile dir)', async (t) => {
+  const cwd = await makeWorkspace(t)
+  const profile = await fsp.mkdtemp(path.join(os.tmpdir(), 'dsh-profile-cwd-'))
+  await fsp.writeFile(
+    path.join(profile, 'cordis.patch.yml'),
+    ['- id: locale', '  name: "@deepseek-ai/dsh-client-locale"', '  config:', '    preference: zh', ''].join('\n'),
+    'utf8',
+  )
+  const previousCwd = process.cwd()
+  process.chdir(profile)
+  t.after(async () => {
+    process.chdir(previousCwd)
+    await fsp.rm(profile, { recursive: true, force: true })
+  })
+
+  const { services, calls } = makeServices()
+  const session = makeSession({ cwd, config: DEFAULT_CONFIG })
+  const execute = makeExecute(services)
+  const result = await execute({ action: 'handoff', summary: 'Cwd profile handoff' }, makeExec(session))
+
+  assert.equal(result.interface_language, 'zh')
+  assert.ok(calls.followup[0].message.content[0].text.includes('接替会话'))
 })
 
