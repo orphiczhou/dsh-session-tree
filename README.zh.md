@@ -8,6 +8,8 @@
 
 一个 DeepSeek Harness 的 profile bundle：把左侧栏换成**会话树**——每个会话下面挂着它的 subagent 后代，可逐层展开、层数不限，点任意节点就能打开该会话的多轮对话。它还注册两个宿主工具：`tree_send` 让智能体能给树里**任意**一个可续聊的子会话发消息，包括内置通讯 API 够不到的**兄弟会话**；`session_handoff` 则让当前会话在上下文将满时自我交接给**同层级**的新会话，并继承同一个工作区、Agent 预设（工作模式）、权限模式、模型与思考等级。
 
+**当前版本：v1.3.2。** 随包 `session-handoff` Skill 自 **v1.3.0** 起；接替提示语跟随 DSH 界面语言自 **v1.3.1** 起（见 [releases](https://github.com/orphiczhou/dsh-session-tree/tags)）。
+
 <!-- 截图占位：有截图后再放到这里。
      不要引用仓库里并不存在的图片文件。 -->
 <!-- ![左侧栏会话树](docs/screenshot.png) -->
@@ -30,9 +32,9 @@
 | 折叠后的侧栏 | 左栏被折叠成图标条时渲染一个 `≡` 按钮，点击即可展开侧栏。 |
 | `tree_send` 工具 | 宿主半工具：向树里任意可续聊的子会话投递消息，兄弟会话也可以。 |
 | `session_handoff` 工具 | 宿主半工具：写下 `HANDOFF-*.md` 交接文件，并启动**同层级**接替会话——子会话在同一个活着的父会话下生成兄弟，根会话（或父已不在）生成新根会话。接替会话继承同一个工作目录与侧栏工作区归属、同一个 Agent 预设（工作模式，因此工具集相同）、同一个权限模式（沙箱 + 审批）、同一个模型与思考等级。 |
-| 接替提示跟随界面语言 | 接替会话读到的第一条指令跟随 DSH 界面语言（**设置 → 通用 → 语言**，`locale.preference`）：`zh` 用中文、`en` 用英文；其它已存语言与未存偏好时回退英文。交接文件正文保持英文规范文档，但其中的「Successor instructions」块与提示语同语言；`status`/`handoff` 渲染行尾带 `lang=zh|en`，返回对象含 `interface_language`，脚本可不解析接替会话日志直接断言。 |
+| 接替提示跟随界面语言 | 接替会话读到的第一条指令跟随 DSH 界面语言（**设置 → 通用 → 语言**，`locale.preference`）：`zh` 用中文、`en` 用英文；其它已存语言与未存偏好时回退英文。交接文件正文保持英文规范文档，但其中的「Successor instructions」块与提示语同语言；`status`/`handoff` 渲染行尾带 `lang=zh\|en`，返回对象含 `interface_language`，脚本可不解析接替会话日志直接断言。 |
 | `SessionTree` 检视 provider | 只读的 Cordis Inspect provider：回报左栏**实际渲染成了什么**——行序、层级、缩进、几何与计算样式——让 agent 用已有的 `cordis_inspect_query` 自己看真实应用里的树，而不必让你念屏幕。 |
-| 随包 Skill（`session-handoff`） | 包内自带 `skills/session-handoff/SKILL.md`，并通过宿主的 filesystem Skill provider 挂载：新会话从 Skill 目录就能发现交接纪律（status → 50% 阈值 → 写交接文件 → 启动接替 → 验收），不需要别人先把工具名喂给它。 |
+| 随包 Skill（`session-handoff`） | 包内自带 [`skills/session-handoff/SKILL.md`](skills/session-handoff/SKILL.md)，并通过宿主的 filesystem Skill provider 挂载：新会话从 Skill 目录就能发现交接纪律（status → 50% 阈值 → 写交接文件 → 启动接替 → 验收），不需要别人先把工具名喂给它。 |
 
 ## 安装
 
@@ -195,13 +197,46 @@ A  （顶层会话，由它来调用 tree_send）
 
 兄弟接替会话改走正常的进程内子会话委派路径，继承预设组成与权限范围，因此不需要工作区挂载：侧栏会把它渲染在父会话下面、与交接会话同层。
 
-**接替提示语的语言。** 接替会话读到的第一条指令跟随 DSH 界面语言，而不是写死的英文模板。工具读取 **设置 → 通用 → 语言** 存入的 `locale.preference`——先经活体 Loader 的 `locale` 条目，再经 profile 的 `cordis.patch.yml` / `cordis.yml`（宿主进程以 profile 目录为 cwd）——归一化到主语言子标签，对 `zh` 与 `en` 本地化提示语；其它已存语言回退英文，未存偏好时同样英文。交接文件正文保持英文规范文档，但「Successor instructions」块与提示语同语言，因此接替会话始终有一份稳定、可机检的文件。`status` / `handoff` 的渲染行尾带 `lang=zh|en`，返回对象含 `interface_language`，验证脚本无需解码接替会话日志即可断言（本仓脚本：`scripts/e2e/verify-kickoff-language.mjs`）。
+**接替提示语的语言。** 接替会话读到的第一条指令跟随 DSH 界面语言，而不是写死的英文模板。工具读取 **设置 → 通用 → 语言** 存入的 `locale.preference`——先经活体 Loader 的 `locale` 条目，再经 profile 的 `cordis.patch.yml` / `cordis.yml`（宿主进程以 profile 目录为 cwd）——归一化到主语言子标签，对 `zh` 与 `en` 本地化提示语；其它已存语言回退英文，未存偏好时同样英文。交接文件正文保持英文规范文档，但「Successor instructions」块与提示语同语言，因此接替会话始终有一份稳定、可机检的文件。`status` / `handoff` 的渲染行尾带 `lang=zh|en`，返回对象含 `interface_language`，验证脚本无需解码接替会话日志即可断言（完整脚本在源码仓 dsh-tree-harness：[verify-kickoff-language.mjs](https://github.com/orphiczhou/dsh-tree-harness/blob/master/scripts/e2e/verify-kickoff-language.mjs)，不随本插件包发布）。
 
 `threshold_pct`（默认 50）在未传 `force:true` 时拒绝过早交接；同一会话五分钟内的第二次交接也会被拒（`force:true` 同时绕过两道闸）。逃生口是显式的，绝不静默：
 
 - `spawn:false` 只写交接文件，不启动任何会话。
 - 启动失败保留已经写好的文件，返回 `spawn_error`。
 - 预设无法再挂载、权限事件无法记录、或工作区挂载失败时，交接仍然成功，但会通过 `successor.preset_error` / `permission_error` / `workspace.reason` 以及人类可读的 `warnings[]` 明确暴露。
+
+**调用样例。**
+
+```jsonc
+// 工具调用：session_handoff
+{
+  "action": "handoff",
+  "summary": "已把交接功能并入会话树单包；测试与真机 E2E 通过；文档待补。",
+  "next_steps": ["补齐 README 兼容性小节", "发布 v1.3.2 并核对 tag"],
+  "files": ["packages/dsh-session-tree/README.zh.md", "docs/publishing.md"],
+  "open_questions": ["市场是否只按 tag 判断更新？"],
+  "note": "发布门禁见 docs/publishing.md。"
+}
+```
+
+```text
+// 返回渲染（单行、有界；完整对象在工具返回值里）
+session_handoff: wrote <cwd>\HANDOFF-<短id>-<时间>.md; successor <id> kind=root preset=standard inherited=session-route lang=zh
+```
+
+| 参数 | 必填 | 含义 |
+|---|---|---|
+| `summary` | **是** | 一段话：任务是什么、现在到哪、还剩什么。接替会话最先读它。 |
+| `next_steps[]` | 建议 | 有序的下一步；接替会话从这里继续。 |
+| `files[]` | 建议 | 改动过的或最该先看的文件。 |
+| `open_questions[]` | 可选 | 接替会话必须带着的未决问题。 |
+| `note` | 可选 | 自由补充（约束、护栏、链接）。 |
+| `kind` | 可选 | `root` / `sibling` / `auto`（缺省，按调用者层级）。 |
+| `spawn` | 可选 | `false` 只写交接文件，不启动会话。 |
+| `threshold_pct` | 可选 | 默认 50。 |
+| `force` | 可选 | 绕过阈值闸与 5 分钟防重复——只在用户明确要求提前交接时用。 |
+
+**新会话里的冒烟测试。** 全新会话上下文远低于 50%，`handoff` 被 `below-threshold` 拒绝是**预期行为**，这次拒绝本身就证明工具已挂载。想看一次完整路径：加 `force:true`（会启动接替会话）或 `spawn:false`（只写交接文件）。5 分钟内第二次交接返回 `recent-handoff`，那是防重复闸，不是故障。只想确认工具在：`session_handoff {action:"status"}` 无副作用。
 
 ### 随包技能（Bundled Skill）
 
@@ -212,13 +247,14 @@ Skill 是插件包的一部分，与工具同版本发布：`package.json.files`
 #### 怎么用这个随包 Skill
 
 1. **安装**：Plugins → Add plugin → Git URL `https://github.com/orphiczhou/dsh-session-tree`；宿主半或 patch 行有变化时，对 bundle 条目做一次 disable→enable。
-2. **确认目录**：新开会话问「你看到的 Skill 有哪些」，应含 `session-handoff`；也可机检该会话首条 `user/message` 的 `<available_skills>`（本仓脚本 `scripts/skill-e2e/collect-skills.mjs`）。
+2. **确认目录**：**新开**一个会话（Skill 目录在会话启动时注入，已开的会话不会刷新），问「你看到的 Skill 有哪些」，应含 `session-handoff`。filesystem Skill provider（`@deepseek-ai/dsh-skill-filesystem`）**随 DSH 桌面版内置，不要单独安装**；机检可用源码仓脚本 [collect-skills.mjs](https://github.com/orphiczhou/dsh-tree-harness/blob/master/scripts/skill-e2e/collect-skills.mjs) 读会话日志。
 3. **用人话触发**（不必点名工具）：
    - 「继续干，快到上限就交接」/「上下文 50% 了，交接给新会话」→ 先 `status`，≥50% 再 `handoff`；
    - 「写个交接文件，让新会话接着干」→ 写交接文件并启动同层级接替；
    - 「交接完验收一下」→ 按 Skill 的验收清单核对（`preset=`/`permission=`、接替首轮读文件、无 `degraded`、`warnings` 为空）。
+   - 先看上面的**冒烟测试**：把 `below-threshold` / `recent-handoff` 当故障是新手最常见的误会。
 4. **语言**：接替会话首条消息跟随 DSH 界面语言（设置 → 通用 → 语言）。`zh` → 中文提示语，`en` → 英文，其它已存语言与未设置 → 英文；`status`/`handoff` 行尾带 `lang=zh|en`，返回对象含 `interface_language`。
-5. **排障**：目录里没有 Skill → 查 profile 是否有 `@deepseek-ai/dsh-skill-filesystem`、patch 行是否已重载；`unknown tool session_handoff` → bundle 未启用。完整用户指南（含配套 `tree-commander` / `tree-worker`）见本仓 [`docs/skills-usage.md`](https://github.com/orphiczhou/dsh-tree-harness/blob/master/docs/skills-usage.md)。
+5. **排障**：目录里没有 Skill → 确认 bundle patch 行已重载（disable→enable）且会话是**新开**的；provider 本身内置。`unknown tool session_handoff` → bundle 未启用。完整用户指南（含配套 `tree-commander` / `tree-worker`，来自 `@local/dsh-tree-engine`）见源码仓 [`docs/skills-usage.md`](https://github.com/orphiczhou/dsh-tree-harness/blob/master/docs/skills-usage.md)（不随本插件包发布）。
 
 ## 实现要点
 
@@ -247,6 +283,8 @@ Skill 是插件包的一部分，与工具同版本发布：`package.json.files`
 
 完全卸载后，`tree_send` 与 `session_handoff` 会在下一次重启后从工具列表里消失（原因见下）。会话自交接能力在 v1.2.0 之前是独立的 `@local/dsh-session-handoff` bundle，现已并入本 bundle——两个能力不会再各自漂移或装成不匹配的版本。
 
+**从 1.2.0 之前的版本升级。** 先停用或移除旧的独立 `@local/dsh-session-handoff` bundle，**再**启用本 bundle。不要两个同时跑：它们注册同名的 `session_handoff` 工具与同名的 `session-handoff` Skill，先加载的那个生效——正是「旧实现遮蔽新实现」的陷阱。
+
 ## 疑难排查
 
 **左栏空白，或者加载时报了席位（slot）相关的错。**
@@ -260,6 +298,12 @@ Skill 是插件包的一部分，与工具同版本发布：`package.json.files`
 
 **改了宿主半（`index.js`），工具没变化。**
 Loader 对已导入的宿主模块是**按包名缓存**的，单纯保存文件不会让它重新求值——即使包在 profile 的 `hmr.root` 内（2026-11-11 实测）。请把插件行停用再启用（Plugins 页面的 `session-tree`，或对 `include:session-tree` 条目执行 `plugin_manager set_plugin enabled:false` → `true`），这一次重载才会加载新的宿主模块；重启 DSH 同样有效。bundle patch（例如 Skill provider 行）的改动同理。客户端半不受此影响，刷新页面即可。
+
+**Skill 在目录里，但 agent 不用它。**
+Skill 靠意图命中、由模型**自己选择**，不点名工具。用日常说法（「交接给新会话」「continue, I'm running low on context」）比说「用 session_handoff」更容易命中；要确定性就直接说「用 session-handoff Skill」。很短的会话可能确实还不需要它。
+
+**升级了插件，但行为还是旧的（没有 Skill / 接替首条仍是英文）。**
+版本相关：随包 Skill 自 **v1.3.0** 起，接替提示语本地化自 **v1.3.1** 起。到 Plugins 行或 `node_modules/@orphiczhou/dsh-session-tree/package.json` 核对版本；低于这些版本时旧行为是预期的。升级后重载 bundle 条目（disable→enable）并**新开**会话。若还启用着旧的独立 `@local/dsh-session-handoff` bundle，请先停用它（见「停用 / 卸载」）。
 
 **某一行显示的文字不是会话标题。**
 这是有意为之，而且与应用其他地方保持一致。对子会话来说，DSH 在主窗口标题栏和右侧栏标签里显示的本来就是子智能体的**描述符标签**（创建它时的委派标签），**不是** `session/title`。本插件渲染同一个字符串，正是为了让行上的文字和点开后看到的东西对得上。会话自身的标题作为次要信息保留：以 `标签 — 标题` 的形式出现在该行的 tooltip 里。普通（非子会话）行显示的是持久化的会话标题。
@@ -286,6 +330,7 @@ dsh-session-tree/
 ├── scripts/verify-bundle.mjs  # 清单自检
 ├── test/render.test.cjs     # headless 渲染测试
 ├── test/handoff.test.js     # 宿主半 session_handoff 测试（node:test）
+├── test/skills.test.cjs     # 随包 Skill 打包回归（frontmatter/files/patch 行）
 ├── LICENSE
 ├── README.md                # 英文 README
 └── README.zh.md             # 本文件

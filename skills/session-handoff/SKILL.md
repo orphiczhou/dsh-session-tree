@@ -1,7 +1,7 @@
 ---
 name: session-handoff
-description: '会话自交接：长任务推进到接近上下文上限（上下文约 50%）时，先 session_handoff {action:"status"} 读真实占用与继承事实，再 session_handoff {action:"handoff"} 把任务/进度/下一步写进 HANDOFF-<id>-<时间>.md 并启动同层级接替会话（继承同工作区、同 Agent 预设/工作模式、同权限模式、同模型与思考等级），新会话读交接文件继续干；不是总结心得，是交棒。也用于「继续干」「快到上限了」「上下文 50%」「交接给新会话」「长任务接力」「让新会话接着干」「handoff」等请求。'
-whenToUse: '用户说「继续干」「接着做」「快到上限了」「上下文 50% 了」「交接给新会话」「长任务接力」「让新会话接着干」「handoff」；一轮对话已经很长、读了很多大文件、工具输出堆满，你感觉上下文接近上限；一个任务必须跨多个会话完成；你即将停止但工作还没完；需要把当前结论/决策/下一步交给后继会话而不是让它重新摸索；任何层级会话（根会话 / tree 指挥官 / worker / 普通子会话）在上下文达到 50% 时。'
+description: '会话自交接：长任务推进到接近上下文上限（上下文约 50%）时，先 session_handoff {action:"status"} 读真实占用与继承事实，再 session_handoff {action:"handoff"} 把任务/进度/下一步写进 HANDOFF-<id>-<时间>.md 并启动同层级接替会话（继承同工作区、同 Agent 预设/工作模式、同权限模式、同模型与思考等级），新会话读交接文件继续干；不是总结心得，是交棒。也用于「继续干」「快到上限了」「上下文 50%」「交接给新会话」「长任务接力」「让新会话接着干」「handoff」等请求。English triggers: continue, keep going, running out of context, running low on context, hand off to a fresh session, new session, around 50 percent, handoff.'
+whenToUse: '用户说「继续干」「接着做」「快到上限了」「上下文 50% 了」「交接给新会话」「长任务接力」「让新会话接着干」「handoff」；一轮对话已经很长、读了很多大文件、工具输出堆满，你感觉上下文接近上限；一个任务必须跨多个会话完成；你即将停止但工作还没完；需要把当前结论/决策/下一步交给后继会话而不是让它重新摸索；任何层级会话（根会话 / tree 指挥官 / worker / 普通子会话）在上下文达到 50% 时。English speakers may say: continue, keep going, running out of context, running low on context, hand off to a fresh session, new session, around 50 percent, handoff.'
 ---
 
 # 会话自交接（Session Handoff）
@@ -61,23 +61,22 @@ session_handoff status: context=18.7% (threshold 50%) pressure=186666/1000000 mo
 ```json
 {
   "action": "handoff",
-  "summary": "给 dsh-tree-harness 增补 CHANGELOG：packages/dsh-tree-engine/CHANGELOG.md 初稿已写入工作区（未提交），tree-engine 测试 62/62 通过；还差 packages/dsh-session-tree 一节与根 README 的 CHANGELOG 链接。",
+  "summary": "我在给订单服务补「退款重试」：重试状态机与单测已完成，集成测试还差支付网关的 mock；没有未决的设计问题。",
   "next_steps": [
-    "先读 HANDOFF-*.md 的 Next steps，然后跑 node test/handoff.test.js 确认基线 34/34（cwd=packages/dsh-session-tree）",
-    "按 docs/publishing.md 的版本条目模板，在 packages/dsh-session-tree/CHANGELOG.md 增补 v1.2.0 条目",
-    "更新根 README 的 CHANGELOG 链接，跑 node scripts/release-plugin.mjs --check --target <checkout>",
-    "把最终文件清单与测试输出回报 Lead；不要重写 dsh-tree-engine 那一节"
+    "先读 HANDOFF 文件确认现状，再跑一遍现有单测确认基线",
+    "补 tests/integration/refund-retry.test.ts 的支付网关 mock 分支",
+    "跑全量测试并汇报结果；不要重写已经通过的模块"
   ],
   "files": [
-    "packages/dsh-tree-engine/CHANGELOG.md（新建，未提交）",
-    "docs/publishing.md（只读参考，未改）"
+    "src/refund/retry.ts",
+    "tests/unit/refund-retry.test.ts"
   ],
-  "open_questions": ["CHANGELOG 是否需要包含 2026-11-11 之前的版本史？", "是否要同步公开插件仓（本轮发布由 Lead 决定）？"],
-  "note": "版本号本轮不 bump（项目 D6 纪律）；只改 CHANGELOG 与 README，不碰 package.json / cordis.patch.yml。"
+  "open_questions": ["支付网关超时是否要计入重试次数？"],
+  "note": "只改上述两个模块与新增测试，不动发布配置。"
 }
 ```
 
-`summary` 必填非空，其余建议尽量填——files / next_steps 就是接替会话的地图。
+> 路径是示例——换成你自己的。`summary` 必填非空，其余建议尽量填：`files` / `next_steps` 就是接替会话的地图。
 
 ### 参数规范
 
@@ -185,7 +184,7 @@ session_handoff status: context=18.7% (threshold 50%) pressure=186666/1000000 mo
 
 - **不需要上级批准**：`context_pct >= 50` 就是授权。
 - 交接一次就够，不要连环交接（5 分钟防重复会拦住；`force` 不能解决「该继续干活」的问题）。
-- `session_handoff` **不会**自动迁移 tree-engine 的 leaf owner（leaf owner 是会话 id）——树任务里的交接协调规则见 tree-commander / tree-worker SKILL。
+- `session_handoff` **不会**自动迁移 tree-engine 的 leaf owner（leaf owner 是会话 id）——树任务里的交接协调规则见 tree-commander / tree-worker SKILL。**注意**：`tree-commander` / `tree-worker` 由另一个包 `@local/dsh-tree-engine` 提供，不随本插件包发布；完整说明见源码仓 `dsh-tree-harness` 的 `docs/skills-usage.md`（https://github.com/orphiczhou/dsh-tree-harness/blob/master/docs/skills-usage.md）。
 
 ## 9. 最小自检清单
 
