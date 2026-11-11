@@ -6,7 +6,7 @@
 [![DSH plugin](https://img.shields.io/badge/DSH-plugin-4b5563.svg)](https://github.com/orphiczhou/dsh-session-tree)
 [![Topic: dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-0ea5e9.svg)](https://github.com/topics/dsh-plugin)
 
-一个 DeepSeek Harness 的 profile bundle：把左侧栏换成**会话树**——每个会话下面挂着它的 subagent 后代，可逐层展开、层数不限，点任意节点就能打开该会话的多轮对话。它还注册了宿主工具 `tree_send`，让智能体能给树里**任意**一个可续聊的子会话发消息，包括内置通讯 API 够不到的**兄弟会话**。
+一个 DeepSeek Harness 的 profile bundle：把左侧栏换成**会话树**——每个会话下面挂着它的 subagent 后代，可逐层展开、层数不限，点任意节点就能打开该会话的多轮对话。它还注册两个宿主工具：`tree_send` 让智能体能给树里**任意**一个可续聊的子会话发消息，包括内置通讯 API 够不到的**兄弟会话**；`session_handoff` 则让当前会话在上下文将满时自我交接给**同层级**的新会话，并继承同一个工作区、Agent 预设（工作模式）、权限模式、模型与思考等级。
 
 <!-- 截图占位：有截图后再放到这里。
      不要引用仓库里并不存在的图片文件。 -->
@@ -29,6 +29,7 @@
 | 搜索框 | 按标签或会话 id 过滤；过滤时结果仍留在各自的工作区分组下。 |
 | 折叠后的侧栏 | 左栏被折叠成图标条时渲染一个 `≡` 按钮，点击即可展开侧栏。 |
 | `tree_send` 工具 | 宿主半工具：向树里任意可续聊的子会话投递消息，兄弟会话也可以。 |
+| `session_handoff` 工具 | 宿主半工具：写下 `HANDOFF-*.md` 交接文件，并启动**同层级**接替会话——子会话在同一个活着的父会话下生成兄弟，根会话（或父已不在）生成新根会话。接替会话继承同一个工作目录与侧栏工作区归属、同一个 Agent 预设（工作模式，因此工具集相同）、同一个权限模式（沙箱 + 审批）、同一个模型与思考等级。 |
 | `SessionTree` 检视 provider | 只读的 Cordis Inspect provider：回报左栏**实际渲染成了什么**——行序、层级、缩进、几何与计算样式——让 agent 用已有的 `cordis_inspect_query` 自己看真实应用里的树，而不必让你念屏幕。 |
 
 ## 安装
@@ -73,7 +74,7 @@ dsh plugin --profile <name> add /absolute/path/to/dsh-session-tree
 - 展开任意一个右侧带子会话数量的行，子会话会嵌套显示在下面。
 - 如果左栏和自带的会话列表一模一样，去 **Plugins** 页面确认 id 为 `session-tree` 的那一行是启用状态。已启用但仍无变化，见[疑难排查](#疑难排查)。
 
-可选：让智能体列一下自己的工具，`tree_send` 在列表里就说明宿主半挂上了。（该工具只在 `tools`、`subagents`、`sessionQuery` 三个服务都存在时注册；缺服务的组合里插件照常加载，只是不提供这个工具。）
+可选：让智能体列一下自己的工具，`tree_send` 与 `session_handoff` 在列表里就说明宿主半挂上了。（`tree_send` 需要 `tools`、`subagents`、`sessionQuery` 三个服务都存在；`session_handoff` 需要 `tools`、`subagents`、`agents`、`tokenMeter`。缺服务的组合里插件照常加载，只是不提供它无法支持的工具。）
 
 ## 使用
 
@@ -161,6 +162,43 @@ A  （顶层会话，由它来调用 tree_send）
 
 失败会以抛错形式报告，带 `tree_send:` 前缀，例如 `tree_send: delivery rejected — subagent/parent-unavailable: …`。
 
+### `session_handoff`
+
+`session_handoff` 在**当前**会话的上下文将满时，把它交接给一个全新的接替会话（项目约定在上下文约 50% 时交接）。两个动作：
+
+| 动作 | 做什么 |
+|---|---|
+| `status`（只读） | 报告当前上下文百分比、会话路由（`provider`/`model`/`reasoning_effort`）、Agent 预设与权限模式、拥有其 `cwd` 的侧栏工作区，以及接替方案（`root` 或 `sibling`）。 |
+| `handoff` | 在会话工作目录写 `HANDOFF-<id>-<timestamp>.md`，并在 `spawn:false` 之外的情况下启动接替会话、发首条指令让它读交接文件并继续。 |
+
+接替层级跟随调用者所在层级：
+
+| 调用者 | 接替会话 |
+|---|---|
+| 根会话（无 `parentSession`） | 新的**根**会话。 |
+| 子会话且父 Agent 活着 | 同一父会话下的**兄弟**（不设 `degraded`）。 |
+| 子会话但父 Agent 已不在 | 普通会话，但持久化 `parentSession` 仍记录血缘——运行时不再要求父会话活着。返回 `degraded:"parent-inactive"`。 |
+
+`kind` 可以强制层级：`root` 总是新建顶层会话；`sibling` 请求兄弟，做不到时回退为根并显式带 `degraded` 字段。
+
+**接替会话继承什么。** 交接要保持上下文连续，因此接替会话以相同的这些事实启动：
+
+| 事实 | 如何携带 |
+|---|---|
+| 工作目录 | 新会话的 `meta.cwd` + 发布前 setup 里的 `workingDirectory.set`。 |
+| 侧栏工作区 | 根接替会话会被挂到拥有该 `cwd` 的 workspace（`workspaceRegistry.resolveByPath` + `Workspace.attachSession`），因此出现在同一个工作区分组下，而不是**未分组**。 |
+| Agent 预设（工作模式） | `meta.agentPreset` + 在发布前 setup 里挂载同一个预设组成，因此接替会话运行相同的 system-prompt 段、skills 和**工具集**。 |
+| 权限模式 | 源会话的 `permission/preset`、`sandbox/mode`、`approval/policy` 事实以 `source:'delegation'` 追加到接替会话自己的日志，且发生在 Agent 发布之前——与进程内子会话继承委派范围的方式完全一致。 |
+| 模型与思考等级 | `agentOptions` 携带交接会话当前路由的 `provider`、`model`、`reasoningEffort`、`maxTokens`。 |
+
+兄弟接替会话改走正常的进程内子会话委派路径，继承预设组成与权限范围，因此不需要工作区挂载：侧栏会把它渲染在父会话下面、与交接会话同层。
+
+`threshold_pct`（默认 50）在未传 `force:true` 时拒绝过早交接；同一会话五分钟内的第二次交接也会被拒（`force:true` 同时绕过两道闸）。逃生口是显式的，绝不静默：
+
+- `spawn:false` 只写交接文件，不启动任何会话。
+- 启动失败保留已经写好的文件，返回 `spawn_error`。
+- 预设无法再挂载、权限事件无法记录、或工作区挂载失败时，交接仍然成功，但会通过 `successor.preset_error` / `permission_error` / `workspace.reason` 以及人类可读的 `warnings[]` 明确暴露。
+
 ## 实现要点
 
 - **席位。** 插件占用 `sidebar.workspaces`——左栏那个单占用（single）席位，优先级 **-100**。single 席位取**优先级最低**的注册者渲染，而在已被占用的优先级上注册会**在加载时抛错**，所以必须用一个不同的优先级。自带的 `WorkspaceBrowser` 是 0，于是本插件拿到席位，而自带那一行仍然留在册——停用本插件，自带侧栏原样回来。
@@ -168,7 +206,7 @@ A  （顶层会话，由它来调用 tree_send）
 - **工作区。** 工作区列表取自自带浏览器读的同一个标准 prop：`useWorkspaces` → `state.items`（宿主给的有序工作区记录）。归属由 `workspace.sessionIds` 决定，**不是** `cwd`——后者只决定会话能否挂到某个工作区；不属于任何工作区的会话收进合成的**未分组**组，固定排最后。这就是自带浏览器自己的分组规则。两处有意的差异：分组默认**展开**而不是折叠，因为这里的工作区层级是额外加的一层区分，而不是「必须先点开才能看到任何会话」的闸门；另外，只要父会话在 store 里，子会话就一定渲染在父会话下面、不会变成分组根行——这正是「没被任何工作区收录的子会话会把视图摊平」的防线。宿主基线未就绪（没有工作区列表）时退回原来的扁平布局，而不是凭空造一个分组。
 - **标题。** 最新标题在挂载时通过 `remote.session.list({})` 从宿主读取——那是每次现读、覆盖全部会话、并带上各自当前 `projections.values.title` 的接口。客户端 store 里的投影快照**每个连接只加载一次基线**，之后 `refreshProjections` 就是空操作，因此 store 里可能永远停在一个早期的 `fallback` 标题上。选 **重新加载标题** 可以再读一次。
 - **打开会话。** 点击节点复用自带导航（`openSession`），所以打开的就是普通的对话界面、普通的标题栏和输入区。
-- **宿主半**只注册一个工具 `tree_send`。工具定义直接写成 `defineTool()` 产出的纯对象形状，因此不导入 `@deepseek-ai/dsh-tools`，它也不是依赖。
+- **宿主半**注册两个工具：`tree_send` 与 `session_handoff`。两个定义都直接写成 `defineTool()` 产出的纯对象形状，因此不导入 `@deepseek-ai/dsh-tools`，它也不是依赖；宿主半不导入任何 `@deepseek-ai/*` 包。
 - **检视 provider（`SessionTree.snapshot`）。** 客户端半边注册一个只读的 Cordis Inspect provider，让 agent 能读回屏幕上那棵树：按文档顺序的每一行，含身份（`data-key`）、类型、层级、计算出的 `paddingLeft`、颜色、背景、字重、包围盒几何，以及 `groupCount` / `rowCount`。每一行带 `data-key` / `data-kind` / `data-depth` 正是为了这个：快照报告的是**画出来的东西**，而不是从 state 重算的结果，所以渲染回归藏不到全绿的测试套件后面。`cordisInspect` 由 client runner 提供，并非每种组合都有，因此用**可选注入**（`ctx.inject(['cordisInspect'], cb)`）请求：服务缺席时回调根本不会被调用，左栏照常渲染。它**绝不**进插件声明的 `inject` 数组——那里少一个服务会让整个插件不加载。
 
 ## 兼容性与版本策略
@@ -177,7 +215,7 @@ A  （顶层会话，由它来调用 tree_send）
 
 这是刻意的。DSH 唯一强制检查的兼容字段，就是 `@deepseek-ai/dsh` 与 `@deepseek-ai/dsh-*` 上的 `peerDependencies`，它会拿正在运行的运行时版本做 semver 匹配，任何一个范围不匹配就跳过该 bundle。**没有声明 DSH peer 就不构成任何约束**，所以不声明意味着运行升级时本插件不会硬失败。
 
-这句话说的是兼容**闸门**，不是“以后每个 DSH 版本都能用”的承诺。插件使用的客户端服务是 `slots`、`sessions`、`uiWorkspace`、`sidebarRight`、`locale`，宿主侧用的是 `subagents.prompt` 与 `sessionQuery.filterSessions`；如果将来的 DSH 改动了这些接口，相应功能会失效，尽管安装依然成功。需要可复现的安装就钉住一个 commit（`github:orphiczhou/dsh-session-tree#<sha>`）。
+这句话说的是兼容**闸门**，不是“以后每个 DSH 版本都能用”的承诺。插件使用的客户端服务是 `slots`、`sessions`、`uiWorkspace`、`sidebarRight`、`locale`，宿主侧用的是 `subagents.prompt`、`sessionQuery.filterSessions`、`agents.create`、`tokenMeter.contextPressure`、`agentPresets`、`permissionPresets`、`workspaceRegistry`；如果将来的 DSH 改动了这些接口，相应功能会失效，尽管安装依然成功。需要可复现的安装就钉住一个 commit（`github:orphiczhou/dsh-session-tree#<sha>`）。
 
 ## 停用 / 卸载
 
@@ -186,7 +224,7 @@ A  （顶层会话，由它来调用 tree_send）
 - **图形界面：** 在 **Plugins** 页面关掉 id 为 `session-tree` 的那一行。
 - **命令行：** `dsh plugin --profile <name> remove @orphiczhou/dsh-session-tree`，依赖与 bundle 层一起移除。
 
-完全卸载后，`tree_send` 会在下一次重启后从工具列表里消失（原因见下）。
+完全卸载后，`tree_send` 与 `session_handoff` 会在下一次重启后从工具列表里消失（原因见下）。会话自交接能力在 v1.2.0 之前是独立的 `@local/dsh-session-handoff` bundle，现已并入本 bundle——两个能力不会再各自漂移或装成不匹配的版本。
 
 ## 疑难排查
 
@@ -217,7 +255,7 @@ Loader 对已导入的宿主模块是**按包名缓存**的，所以改已安装
 
 ```
 dsh-session-tree/
-├── index.js                 # 宿主半：tree_send 工具
+├── index.js                 # 宿主半：tree_send 与 session_handoff 工具
 ├── client.js                # 客户端半：整个侧栏 UI（浏览器 bundle）
 ├── cordis.patch.yml         # 本 bundle 贡献的唯一一条 Cordis 行
 ├── package.json             # 清单：dsh.bundle、dsh.client、exports
@@ -225,6 +263,7 @@ dsh-session-tree/
 ├── icon.svg                 # bundle 图标
 ├── scripts/verify-bundle.mjs  # 清单自检
 ├── test/render.test.cjs     # headless 渲染测试
+├── test/handoff.test.js     # 宿主半 session_handoff 测试（node:test）
 ├── LICENSE
 ├── README.md                # 英文 README
 └── README.zh.md             # 本文件
@@ -238,6 +277,14 @@ node test/render.test.cjs
 
 它在 Node 沙箱里加载**真实的** `client.js`（stub 掉 `window.__ModuleLoader__` 和 React），用按实时会话数据重建的会话表驱动它，然后断言产出的行结构：默认是否全折叠、逐级展开后的行数、各层缩进、key 是否唯一、畸形行是否被容错处理，以及点击顶层会话与子会话行是否用正确的寻址方式导航。
 
+跑宿主半测试（交接的层级矩阵、继承事实、工作区归属、闸门、交接文件）：
+
+```sh
+node test/handoff.test.js
+```
+
+它们用 `node:test` 与纯服务 mock——不创建真实会话、不加载任何 `@deepseek-ai/*` 包；文件写到一次性临时目录。
+
 按 DSH 安装 bundle 时实际执行的规则自检清单（patch 文件存在且可解析、`exports["./client"]` 与 `dsh.client.platform`、客户端模块 id 与包名一致、图标大小、locale 文件、以及声明了哪些 DSH peer）：
 
 ```sh
@@ -248,4 +295,4 @@ node scripts/verify-bundle.mjs
 
 [MIT](LICENSE) © orphiczhou
 
-为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 而做。DSH、Cordis 以及自带的 `@deepseek-ai/dsh-*` 包均为各自作者的作品；本 bundle 只是占用了一个客户端席位、注册了一个宿主工具。
+为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 而做。DSH、Cordis 以及自带的 `@deepseek-ai/dsh-*` 包均为各自作者的作品；本 bundle 只是占用了一个客户端席位、注册了两个宿主工具。

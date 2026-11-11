@@ -6,7 +6,7 @@
 [![DSH plugin](https://img.shields.io/badge/DSH-plugin-4b5563.svg)](https://github.com/orphiczhou/dsh-session-tree)
 [![Topic: dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-0ea5e9.svg)](https://github.com/topics/dsh-plugin)
 
-A DeepSeek Harness profile bundle that turns the left sidebar into a **session tree**: every session plus its nested subagent descendants, expandable to arbitrary depth, each node one click away from its multi-turn conversation. It also adds the `tree_send` Host tool, which lets an agent message **any** continuable subagent session in the tree — including a sibling, which the built-in messaging APIs cannot reach.
+A DeepSeek Harness profile bundle that turns the left sidebar into a **session tree**: every session plus its nested subagent descendants, expandable to arbitrary depth, each node one click away from its multi-turn conversation. It also adds two Host tools: `tree_send`, which lets an agent message **any** continuable subagent session in the tree — including a sibling, which the built-in messaging APIs cannot reach — and `session_handoff`, which hands the current session off to a fresh successor at the **same level** before its context budget fills, carrying the same workspace, Agent preset, permission preset, model and reasoning effort.
 
 <!-- Screenshot placeholder: add a screenshot of the left sidebar tree here once one exists.
      Do not reference an image file that is not in the repository. -->
@@ -29,6 +29,7 @@ A DeepSeek Harness profile bundle that turns the left sidebar into a **session t
 | Search box | Filters rows by label or session id. While filtering, matches stay grouped under their workspace headers. |
 | Collapsed-sidebar rail | When the sidebar is collapsed to its icon rail, renders a `≡` button that expands it again. |
 | `tree_send` tool | Host-side tool that delivers a message to any continuable subagent session in the tree, including a sibling. |
+| `session_handoff` tool | Host-side tool that writes a `HANDOFF-*.md` recap and starts a fresh successor at the same level — a sibling under the same live parent for a child session, a new root session for a root (or when the parent is gone). The successor inherits the same working directory, sidebar workspace membership, Agent preset (`work mode`, and therefore the same tool set), permission preset (sandbox + approval), model and reasoning effort. |
 | `SessionTree` inspect provider | Read-only Cordis Inspect provider that reports what the sidebar **actually rendered** — row order, level, indentation, geometry and computed styles — so an agent can inspect the live tree through `cordis_inspect_query` instead of asking you to read the screen. |
 
 ## Install
@@ -73,7 +74,7 @@ The path must be absolute; pnpm records it as a `link:` dependency.
 - Expand any row that shows a child count. Subagent rows appear nested underneath.
 - If the sidebar still looks exactly like the shipped session list, check the **Plugins** page: the row named `session-tree` must be enabled. If it is enabled and the sidebar is unchanged, see [Troubleshooting](#troubleshooting).
 
-Optional: confirm the Host half is mounted by asking an agent to list its tools; `tree_send` appears in the list. (The tool is only registered when the `tools`, `subagents`, and `sessionQuery` services are all present; in a composition without them the plugin still loads and simply offers no tool.)
+Optional: confirm the Host half is mounted by asking an agent to list its tools; `tree_send` and `session_handoff` appear in the list. (`tree_send` is registered when the `tools`, `subagents`, and `sessionQuery` services are all present; `session_handoff` when `tools`, `subagents`, `agents`, and `tokenMeter` are. In a composition without them the plugin still loads and simply offers the tools it can support.)
 
 ## Usage
 
@@ -161,6 +162,43 @@ A  (top-level session, runs the tree_send tool)
 
 Failures are reported as thrown errors with a `tree_send:` prefix, for example `tree_send: delivery rejected — subagent/parent-unavailable: …`.
 
+### `session_handoff`
+
+`session_handoff` hands the **current** session off to a fresh successor before its context budget fills (the project convention is to hand off around 50% of the context window). It has two actions:
+
+| Action | What it does |
+|---|---|
+| `status` (read-only) | Reports the current context percentage, the session's route (`provider`/`model`/`reasoning_effort`), its Agent preset and permission preset, the sidebar workspace that owns its `cwd`, and the successor plan (`root` or `sibling`). |
+| `handoff` | Writes `HANDOFF-<id>-<timestamp>.md` into the session working directory and, unless `spawn:false`, starts the successor and sends it a first message telling it to read that file and continue. |
+
+The successor level follows the caller's level:
+
+| Caller | Successor |
+|---|---|
+| Root session (no `parentSession`) | A new **root** session. |
+| Child session whose parent Agent is live | A **sibling** under that same parent (`degraded` is not set). |
+| Child session whose parent Agent is gone | An ordinary session whose durable `parentSession` still records the lineage — the runtime no longer requires a live parent. Reported as `degraded:"parent-inactive"`. |
+
+`kind` can force the layer: `root` always builds a top-level session; `sibling` requests a sibling and falls back to root with an explicit `degraded` field.
+
+**What the successor inherits.** A handoff keeps the working context continuous, so the successor starts with the same:
+
+| Fact | How it is carried |
+|---|---|
+| Working directory | `meta.cwd` on the new session + `workingDirectory.set` in the pre-publication setup. |
+| Sidebar workspace | A root successor is attached to the Workspace that owns the `cwd` (`workspaceRegistry.resolveByPath` + `Workspace.attachSession`), so it appears under the same workspace group instead of **Ungrouped**. |
+| Agent preset (work mode) | `meta.agentPreset` + the preset composition is mounted in the pre-publication setup, so the successor runs the same system-prompt sections, skills and **tool set**. |
+| Permission preset | The source session's `permission/preset`, `sandbox/mode` and `approval/policy` facts are appended to the successor's own log with `source:'delegation'` before the Agent is published — exactly how in-process subagents inherit their delegation scope. |
+| Model & thinking level | `agentOptions` carries `provider`, `model`, `reasoningEffort` and `maxTokens` from the handing-off session's current route. |
+
+A sibling successor inherits the preset composition and permission scope through the normal in-process subagent delegation path instead (`subagents.startActivation` under the same live parent), which is why it needs no workspace attach: the sidebar renders it under that parent, at the same depth as the session that handed off.
+
+`threshold_pct` (default 50) refuses an early handoff unless `force:true` is passed; a second handoff in the same session within five minutes is also refused (`force:true` bypasses both guards). Escape hatches are explicit, never silent:
+
+- `spawn:false` writes the recap file and starts nothing.
+- A spawn failure keeps the already-written file and returns `spawn_error`.
+- A preset that can no longer be mounted, a permission event that cannot be recorded, or a workspace attach that fails keep the handoff successful but surface `successor.preset_error` / `permission_error` / `workspace.reason` plus a human-readable `warnings[]` entry.
+
 ## How it works
 
 - **Seat.** The plugin occupies `sidebar.workspaces`, the left sidebar's single-occupant slot, at priority **-100**. The slot system elects the *lowest* priority for a single slot, and registering at an already-taken priority throws at load, which is why a distinct priority is required. The shipped `WorkspaceBrowser` sits at priority 0, so this plugin wins the seat while the built-in entry stays registered — disabling the plugin restores the built-in sidebar untouched.
@@ -168,7 +206,7 @@ Failures are reported as thrown errors with a `tree_send:` prefix, for example `
 - **Workspaces.** The workspace list comes from the same standard prop the shipped browser reads, `useWorkspaces` → `state.items` (the Host's ordered workspace records). Membership is decided by `workspace.sessionIds` — **not** by `cwd`, which only gates attaching a session to a workspace — and sessions no workspace accounts for collect in a synthetic **Ungrouped** group, always last. That is the shipped browser's own grouping rule. Two deliberate differences: groups start **expanded** rather than collapsed, because the workspace level here is an added distinction rather than a gate you must open before seeing any session; and a session whose parent is present in the store is always rendered under that parent, never as a group root, which is what keeps a subagent that no workspace lists from flattening the view. With no workspace list (Host baseline not ready) the tree falls back to the previous flat layout instead of inventing a group.
 - **Titles.** The newest title is read from the Host on mount through `remote.session.list({})`, which reads every session fresh and carries each session's current `projections.values.title`. That matters because the client store's projection snapshot is loaded once per connection and can keep an early `fallback` title forever; the client-side `refreshProjections` is a no-op once that baseline is ready. Titles are re-read when you pick **Reload titles**.
 - **Opening.** Clicking a node reuses the shipped navigation (`openSession`), so the opened conversation is the ordinary one, with the ordinary header and composer.
-- **The Host half** registers one tool, `tree_send`. The tool definition is a plain object in the shape `defineTool()` produces, so `@deepseek-ai/dsh-tools` is not imported and is not a dependency.
+- **The Host half** registers two tools, `tree_send` and `session_handoff`. Both definitions are plain objects in the shape `defineTool()` produces, so `@deepseek-ai/dsh-tools` is not imported and is not a dependency; neither Host half imports any `@deepseek-ai/*` package.
 - **Inspect provider (`SessionTree.snapshot`).** The client half registers one read-only Cordis Inspect provider, so an agent can read back the tree that is on screen: every rendered row in document order with its identity (`data-key`), kind, level, computed `paddingLeft`, colour, background, font weight and bounding-box geometry, plus `groupCount` / `rowCount`. Rows carry `data-key`, `data-kind` and `data-depth` for exactly that reason — the snapshot reports what was drawn rather than recomputing it from state, so a rendering regression cannot hide behind a green test suite. `cordisInspect` belongs to the client runner and is **not** part of every composition, so it is requested with an **optional** injection (`ctx.inject(['cordisInspect'], cb)`): where the service is absent the callback never runs and the sidebar renders exactly as before. It is deliberately not in the plugin's declared `inject` list, where one missing service would stop the whole plugin from loading.
 
 ## Compatibility & version policy
@@ -177,7 +215,7 @@ This bundle declares **no `peerDependencies`**.
 
 That is deliberate. The only compatibility field DSH enforces is `peerDependencies` on `@deepseek-ai/dsh` and `@deepseek-ai/dsh-*`, semver-matched against the running runtime version; every declared range must match or the bundle is skipped at load. **Missing DSH peers impose no constraint**, so declaring none means this plugin does not hard-fail on a runtime upgrade.
 
-That is a statement about the compatibility *gate*, not a promise that every future DSH version works with this code. The plugin talks to public client services (`slots`, `sessions`, `uiWorkspace`, `sidebarRight`, `locale`) and to `subagents.prompt` / `sessionQuery.filterSessions` on the Host; if a future DSH changes those surfaces, the affected feature will break even though the install still succeeds. Pin a commit (`github:orphiczhou/dsh-session-tree#<sha>`) if you need a reproducible install.
+That is a statement about the compatibility *gate*, not a promise that every future DSH version works with this code. The plugin talks to public client services (`slots`, `sessions`, `uiWorkspace`, `sidebarRight`, `locale`) and to `subagents.prompt` / `sessionQuery.filterSessions` / `agents.create` / `tokenMeter.contextPressure` / `agentPresets` / `permissionPresets` / `workspaceRegistry` on the Host; if a future DSH changes those surfaces, the affected feature will break even though the install still succeeds. Pin a commit (`github:orphiczhou/dsh-session-tree#<sha>`) if you need a reproducible install.
 
 ## Disable / uninstall
 
@@ -186,7 +224,7 @@ Disabling restores the shipped sidebar immediately; no restart is required.
 - **GUI:** on the **Plugins** page, turn off the plugin row whose id is `session-tree`.
 - **CLI:** `dsh plugin --profile <name> remove @orphiczhou/dsh-session-tree` removes both the dependency and the bundle layer.
 
-Uninstalling also removes `tree_send` from the tool list after the next restart (see below).
+Uninstalling also removes `tree_send` and `session_handoff` from the tool list after the next restart (see below). The handoff feature used to be a separate `@local/dsh-session-handoff` bundle; as of v1.2.0 it ships in this bundle, so the two capabilities cannot drift apart or be installed in mismatched versions.
 
 ## Troubleshooting
 
@@ -217,7 +255,7 @@ The repository is plain ESM; nothing is compiled.
 
 ```
 dsh-session-tree/
-├── index.js                 # Host half: the tree_send tool
+├── index.js                 # Host half: the tree_send and session_handoff tools
 ├── client.js                # Client half: the whole sidebar UI (browser bundle)
 ├── cordis.patch.yml         # the single Cordis row this bundle contributes
 ├── package.json             # manifest: dsh.bundle, dsh.client, exports
@@ -225,6 +263,7 @@ dsh-session-tree/
 ├── icon.svg                 # bundle icon
 ├── scripts/verify-bundle.mjs  # manifest self-check
 ├── test/render.test.cjs     # headless render test
+├── test/handoff.test.js     # Host-half tests for session_handoff (node:test)
 ├── LICENSE
 ├── README.md                # this file
 └── README.zh.md             # Chinese README
@@ -238,6 +277,14 @@ node test/render.test.cjs
 
 It loads the **real** `client.js` in a Node sandbox (stubbing `window.__ModuleLoader__` and React) and drives it with a session map rebuilt from live session data, then asserts the row structure it produces: default collapsed state, per-level row counts after expanding, indentation per depth, key uniqueness, tolerant handling of malformed rows, and that clicking a top-level session and a subagent row navigate with the correct addresses.
 
+Run the Host-half tests (handoff level matrix, inheritance facts, workspace attribution, guards, recap file):
+
+```sh
+node test/handoff.test.js
+```
+
+They use `node:test` with plain service mocks — no real session is created and no `@deepseek-ai/*` package is loaded; files are written to a throw-away temp directory.
+
 Check the manifest against the rules DSH applies before it installs a bundle (patch file present and resolvable, `exports["./client"]` plus `dsh.client.platform`, the client module id equal to the package name, icon size, locale files, and the declared DSH peers):
 
 ```sh
@@ -248,4 +295,4 @@ node scripts/verify-bundle.mjs
 
 [MIT](LICENSE) © orphiczhou
 
-Built for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). DSH, Cordis, and the shipped `@deepseek-ai/dsh-*` packages are the work of their respective authors; this bundle only occupies a client slot and registers one Host tool.
+Built for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). DSH, Cordis, and the shipped `@deepseek-ai/dsh-*` packages are the work of their respective authors; this bundle only occupies a client slot and registers two Host tools.

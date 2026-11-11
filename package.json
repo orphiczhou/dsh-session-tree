@@ -1,8 +1,8 @@
 {
   "name": "@orphiczhou/dsh-session-tree",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "type": "module",
-  "description": "Left-sidebar session tree for DeepSeek Harness: every session with its nested subagent descendants, click-through to multi-turn conversations, plus the tree_send tool for messaging any continuable session across the tree.",
+  "description": "Left-sidebar session tree for DeepSeek Harness: every session with its nested subagent descendants, click-through to multi-turn conversations, plus the tree_send tool for messaging any continuable session across the tree and the session_handoff tool for same-level context handoff that inherits workspace, agent preset, permission preset, model and reasoning effort.",
   "license": "MIT",
   "author": "orphiczhou",
   "keywords": [
