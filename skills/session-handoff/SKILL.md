@@ -34,7 +34,7 @@ whenToUse: '用户说「继续干」「接着做」「快到上限了」「上�
 返回是**一行文本**（模型面渲染，≤400 字符截断；完整对象见工具返回值）。样例（随宿主版本可能变化，别把整行格式当契约）：
 
 ```
-session_handoff status: context=18.7% (threshold 50%) pressure=186666/1000000 model=opencode-go/deepseek-v4.1-flash effort=max preset=standard permission=danger-full-access/danger-full-access/never successor=sibling next=continue
+session_handoff status: context=18.7% (threshold 50%) pressure=186666/1000000 model=opencode-go/deepseek-v4.1-flash effort=max preset=standard permission=danger-full-access/danger-full-access/never successor=sibling next=continue lang=zh
 ```
 
 逐段读法：
@@ -129,7 +129,7 @@ session_handoff status: context=18.7% (threshold 50%) pressure=186666/1000000 mo
 
 1. **看交接返回行**（示意，字段以实际渲染为准）：
    ```
-   session_handoff: wrote <cwd>\HANDOFF-<短id>-<yyyyMMdd-HHmmss>.md; successor <id> kind=root preset=<预设> workspace=<工作区id> inherited=session-route
+   session_handoff: wrote <cwd>\HANDOFF-<短id>-<yyyyMMdd-HHmmss>.md; successor <id> kind=root preset=<预设> workspace=<工作区id> inherited=session-route lang=zh
    ```
    - `status` 行的 `preset=` / `permission=` 应为真实值（不是 `unavailable`）；
    - root 路径应出现 `workspace=`（宿主装配了 workspaceRegistry 时）；出现 `degraded=` 说明层级降级；
@@ -164,7 +164,7 @@ session_handoff status: context=18.7% (threshold 50%) pressure=186666/1000000 mo
 
 写作纪律：
 
-1. **结论要可验证**：写「已跑 `node test/handoff.test.js` → 34/34 通过」，不要写「测试应该没问题」。
+1. **结论要可验证**：写「已跑 `node test/handoff.test.js` → 全部通过」，不要写「测试应该没问题」。
 2. **下一步有序可执行**：第 1 条就是接班第一件事；命令、路径、工作目录写全。
 3. **不要重做已完成工作**：明确列出已完成项和「不要重做」。
 4. **files 写状态**：新建 / 修改 / 未提交 / 已提交要区分。

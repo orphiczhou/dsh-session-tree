@@ -8,7 +8,7 @@
 
 一个 DeepSeek Harness 的 profile bundle：把左侧栏换成**会话树**——每个会话下面挂着它的 subagent 后代，可逐层展开、层数不限，点任意节点就能打开该会话的多轮对话。它还注册两个宿主工具：`tree_send` 让智能体能给树里**任意**一个可续聊的子会话发消息，包括内置通讯 API 够不到的**兄弟会话**；`session_handoff` 则让当前会话在上下文将满时自我交接给**同层级**的新会话，并继承同一个工作区、Agent 预设（工作模式）、权限模式、模型与思考等级。
 
-**当前版本：v1.3.2。** 随包 `session-handoff` Skill 自 **v1.3.0** 起；接替提示语跟随 DSH 界面语言自 **v1.3.1** 起（见 [releases](https://github.com/orphiczhou/dsh-session-tree/tags)）。
+**当前版本：v1.3.3。** 随包 `session-handoff` Skill 自 **v1.3.0** 起；接替提示语跟随 DSH 界面语言自 **v1.3.1** 起（见 [releases](https://github.com/orphiczhou/dsh-session-tree/tags)）。
 
 <!-- 截图占位：有截图后再放到这里。
      不要引用仓库里并不存在的图片文件。 -->
@@ -147,7 +147,7 @@ A  （顶层会话，由它来调用 tree_send）
 **兄弟 → 兄弟。** `B` 里的智能体要把一个发现交给 `C`，它调用：
 
 ```json
-{ "target": "C", "message": "你问的那个 schema 在 packages/session/session-title/src/types.ts。", "delivery": "steer" }
+{ "target": "C", "message": "你问的那个 schema 在 src/session/title/types.ts。", "delivery": "steer" }
 ```
 
 省略了 `parent`，工具于是去读 `C` 的日志，取出它的 `parentSession`（也就是 `A`），再从那个地址投递。`A` 在线，投递被受理。**这正是内置 API 表达不了的情况**——`B` 并不是 `C` 的父会话。
@@ -211,11 +211,11 @@ A  （顶层会话，由它来调用 tree_send）
 // 工具调用：session_handoff
 {
   "action": "handoff",
-  "summary": "已把交接功能并入会话树单包；测试与真机 E2E 通过；文档待补。",
-  "next_steps": ["补齐 README 兼容性小节", "发布 v1.3.2 并核对 tag"],
-  "files": ["packages/dsh-session-tree/README.zh.md", "docs/publishing.md"],
-  "open_questions": ["市场是否只按 tag 判断更新？"],
-  "note": "发布门禁见 docs/publishing.md。"
+  "summary": "退款重试：状态机与单测已完成，集成测试还差支付网关的 mock。",
+  "next_steps": ["先跑一遍现有单测确认基线", "补 tests/integration/refund-retry.test.ts 的网关 mock 分支"],
+  "files": ["src/refund/retry.ts", "tests/unit/refund-retry.test.ts"],
+  "open_questions": ["网关超时是否计入重试次数？"],
+  "note": "只改上面两个文件与新增测试。"
 }
 ```
 
@@ -236,7 +236,7 @@ session_handoff: wrote <cwd>\HANDOFF-<短id>-<时间>.md; successor <id> kind=ro
 | `threshold_pct` | 可选 | 默认 50。 |
 | `force` | 可选 | 绕过阈值闸与 5 分钟防重复——只在用户明确要求提前交接时用。 |
 
-**新会话里的冒烟测试。** 全新会话上下文远低于 50%，`handoff` 被 `below-threshold` 拒绝是**预期行为**，这次拒绝本身就证明工具已挂载。想看一次完整路径：加 `force:true`（会启动接替会话）或 `spawn:false`（只写交接文件）。5 分钟内第二次交接返回 `recent-handoff`，那是防重复闸，不是故障。只想确认工具在：`session_handoff {action:"status"}` 无副作用。
+**新会话里的冒烟测试。** 全新会话上下文远低于 50%，直接 `handoff` 被 `below-threshold` 拒绝是**预期行为**，这次拒绝本身就证明工具已挂载。想看一次完整路径：加 `force:true`（会启动接替会话）。只想写交接文件不启动会话：传 `spawn:false`——**这个干跑不被阈值闸拦**（低于 50% 也会写 `HANDOFF-*.md`）；防重复闸仍然生效，5 分钟内第二次会返回 `recent-handoff`。只想确认工具在：`session_handoff {action:"status"}` 无副作用。
 
 ### 随包技能（Bundled Skill）
 

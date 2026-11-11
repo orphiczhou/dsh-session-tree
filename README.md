@@ -8,7 +8,7 @@
 
 A DeepSeek Harness profile bundle that turns the left sidebar into a **session tree**: every session plus its nested subagent descendants, expandable to arbitrary depth, each node one click away from its multi-turn conversation. It also adds two Host tools: `tree_send`, which lets an agent message **any** continuable subagent session in the tree — including a sibling, which the built-in messaging APIs cannot reach — and `session_handoff`, which hands the current session off to a fresh successor at the **same level** before its context budget fills, carrying the same workspace, Agent preset, permission preset, model and reasoning effort.
 
-**Current release: v1.3.2.** Bundled `session-handoff` Skill since **v1.3.0**; the successor kickoff prompt follows the DSH interface language since **v1.3.1** (see [releases](https://github.com/orphiczhou/dsh-session-tree/tags)).
+**Current release: v1.3.3.** Bundled `session-handoff` Skill since **v1.3.0**; the successor kickoff prompt follows the DSH interface language since **v1.3.1** (see [releases](https://github.com/orphiczhou/dsh-session-tree/tags)).
 
 <!-- Screenshot placeholder: add a screenshot of the left sidebar tree here once one exists.
      Do not reference an image file that is not in the repository. -->
@@ -147,7 +147,7 @@ A  (top-level session, runs the tree_send tool)
 **Sibling → sibling.** The agent inside `B` wants to hand a finding to `C`. It runs:
 
 ```json
-{ "target": "C", "message": "The schema you asked about is in packages/session/session-title/src/types.ts.", "delivery": "steer" }
+{ "target": "C", "message": "The schema you asked about is in src/session/title/types.ts.", "delivery": "steer" }
 ```
 
 `parent` is omitted, so the tool reads `C`'s log, finds its `parentSession` (`A`), and delivers through that address. `A` is live, so the delivery is accepted. This is the case the built-in APIs cannot express, because `B` is not `C`'s parent.
@@ -211,11 +211,11 @@ A sibling successor inherits the preset composition and permission scope through
 // tool call: session_handoff
 {
   "action": "handoff",
-  "summary": "Merged the handoff feature into the session-tree bundle; tests and the real-machine E2E pass; docs still pending.",
-  "next_steps": ["Update the README compatibility section", "Publish v1.3.2 and verify tags"],
-  "files": ["packages/dsh-session-tree/README.md", "docs/publishing.md"],
-  "open_questions": ["Does the marketplace pick up a tag-only release?"],
-  "note": "Follow the repo's publishing gate in docs/publishing.md."
+  "summary": "Refund retry: the state machine and unit tests are done; integration tests still need a payment-gateway mock.",
+  "next_steps": ["Run the existing unit tests first", "Add the gateway mock branch to tests/integration/refund-retry.test.ts"],
+  "files": ["src/refund/retry.ts", "tests/unit/refund-retry.test.ts"],
+  "open_questions": ["Should gateway timeouts count toward the retry budget?"],
+  "note": "Only touch the two files above and add the new test."
 }
 ```
 
@@ -236,7 +236,7 @@ session_handoff: wrote <cwd>\HANDOFF-<short-id>-<timestamp>.md; successor <id> k
 | `threshold_pct` | optional | Default 50. |
 | `force` | optional | Bypass the threshold guard and the 5-minute duplicate guard — only when the user explicitly asks for an early handoff. |
 
-**Smoke test in a brand-new session.** A fresh session is far below 50%, so `handoff` is *expected* to be refused with `below-threshold` — that refusal already proves the tool is mounted. To see the whole path once: add `force:true` (spawns a successor) or `spawn:false` (writes the recap only). A second handoff within five minutes returns `recent-handoff`; that is the duplicate guard, not a failure. `session_handoff {action:"status"}` alone is a side-effect-free way to confirm the tool and read the render markers.
+**Smoke test in a brand-new session.** A fresh session is far below 50%, so a plain `handoff` is *expected* to be refused with `below-threshold` — that refusal already proves the tool is mounted. To see the whole path once, add `force:true` (spawns a successor). To only write the recap without spawning, pass `spawn:false` — this **dry run is not blocked by the threshold guard** (it writes `HANDOFF-*.md` even below 50%); the duplicate guard still applies, so a second handoff within five minutes returns `recent-handoff`. `session_handoff {action:"status"}` alone is a side-effect-free way to confirm the tool and read the render markers.
 
 ### Bundled Skill
 

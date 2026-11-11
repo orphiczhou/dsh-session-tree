@@ -1211,18 +1211,22 @@ export function makeExecute(services, options = {}) {
     }
 
     const force = args.force === true
+    // `spawn:false` is a dry run: it only writes the recap file, so the
+    // threshold guard must not block it (a below-threshold session can still
+    // produce a preview recap). The duplicate guard still applies to it.
+    const fileOnly = args.spawn === false
     const requestedKind = normalizeKind(args.kind)
     const facts = collectFacts(services, session, agent)
 
     // 1. Threshold guard: refuse an accidental early handoff, returning the pct.
-    if (!force && isNumber(facts.pct) && facts.pct < thresholdPct) {
+    if (!force && !fileOnly && isNumber(facts.pct) && facts.pct < thresholdPct) {
       return {
         action: 'handoff',
         status: 'rejected',
         reason: 'below-threshold',
         context_pct: round1(facts.pct),
         threshold_pct: thresholdPct,
-        hint: 'Pass force:true only when the user explicitly wants to hand off before the threshold.',
+        hint: 'Pass force:true only when the user explicitly wants to hand off before the threshold; spawn:false writes the recap without spawning and is not blocked by this guard.',
         warnings: [],
       }
     }

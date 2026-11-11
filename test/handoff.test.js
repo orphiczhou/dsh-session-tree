@@ -565,6 +565,25 @@ test('handoff：spawn=false → 只写文件，不启动接替会话', async (t)
   assert.equal(await exists(result.handoff_path), true)
 })
 
+test('handoff：spawn=false 在阈值以下也能只写文件（干跑不被阈值闸拦）', async (t) => {
+  const cwd = await makeWorkspace(t)
+  const { services, calls } = makeServices({ tokenMeter: { contextPressure: () => ({ pressureTokens: 20000, contextWindow: 100000 }) } })
+  const session = makeSession({ cwd, config: DEFAULT_CONFIG })
+  const execute = makeExecute(services)
+
+  const result = await execute(
+    { action: 'handoff', summary: 'Dry run below threshold', spawn: false },
+    makeExec(session),
+  )
+
+  assert.equal(result.status, 'file-only')
+  assert.equal(result.spawn, 'skipped')
+  assert.equal(result.context_pct, 20)
+  assert.equal(calls.create.length, 0)
+  assert.equal(calls.startActivation.length, 0)
+  assert.equal(await exists(result.handoff_path), true)
+})
+
 test('handoff：5 分钟内防重复，超过窗口后可再次交接', async (t) => {
   const cwd = await makeWorkspace(t)
   const { services, calls } = makeServices()
