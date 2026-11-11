@@ -8,7 +8,7 @@
 
 A DeepSeek Harness profile bundle that turns the left sidebar into a **session tree**: every session plus its nested subagent descendants, expandable to arbitrary depth, each node one click away from its multi-turn conversation. It also adds two Host tools: `tree_send`, which lets an agent message **any** continuable subagent session in the tree — including a sibling, which the built-in messaging APIs cannot reach — and `session_handoff`, which hands the current session off to a fresh successor at the **same level** before its context budget fills, carrying the same workspace, Agent preset, permission preset, model and reasoning effort.
 
-**Current release: v1.3.4.** Bundled `session-handoff` Skill since **v1.3.0**; the successor kickoff prompt follows the DSH interface language since **v1.3.1** (see [releases](https://github.com/orphiczhou/dsh-session-tree/tags)).
+**Current release: v1.3.5.** Bundled `session-handoff` Skill since **v1.3.0**; the successor kickoff prompt follows the DSH interface language since **v1.3.1** (see [releases](https://github.com/orphiczhou/dsh-session-tree/tags)).
 
 <!-- Screenshot placeholder: add a screenshot of the left sidebar tree here once one exists.
      Do not reference an image file that is not in the repository. -->
@@ -154,7 +154,7 @@ A  (top-level session, runs the tree_send tool)
 
 **Parent → child.** `A` messaging `B` or `C` is the same call with `target` set to the child, and resolves the same way — `B`'s own log names `A` as its parent, which is exactly the address the delivery uses.
 
-**Root → grandchild is not a path.** `A` messaging `D` would require delivering through `D`'s direct parent address (`B`), and `D` is not that parent's own child from the tool's point of view — the request is refused with `subagent/parent-unavailable`. Chain two sends: `A` → `B`, then `B` → `D`.
+**Root → grandchild is not a path.** `A` messaging `D` would require delivering through `D`'s direct parent address (`B`); the caller is not that parent (`A` is not `D`'s parent), so the request is refused with `subagent/parent-unavailable`. Chain two sends: `A` → `B`, then `B` → `D`.
 
 #### Exact limits
 
