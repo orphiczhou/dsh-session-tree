@@ -61,6 +61,10 @@ window.__ModuleLoader__.load({
 .st-folder{flex:none;width:13px;height:13px;opacity:.8}
 .st-group-path{flex:none;max-width:34%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.55;font-weight:400;font-size:11px}
 .st-group-ungrouped{font-style:italic;font-weight:500}
+/* Workspace ordering / hiding (v1.1.0). The hidden section sits at the end of
+   the tree; its workspace headers carry the same "hidden" tag as the row. */
+.st-group-section{color:var(--dsw-alias-label-tertiary)}
+.st-group[data-hidden='true'] .st-label{opacity:.85}
 .st-search{margin:0 8px 6px;flex:none}
 .st-search input{width:100%;box-sizing:border-box;padding:4px 8px;border-radius:var(--dsw-radius-sm);border:1px solid var(--dsw-alias-border-l1);background:transparent;color:inherit;font:inherit;outline:none}
 .st-scroll{overflow:auto;min-height:0;flex:1;padding:0 6px 12px}
@@ -207,6 +211,17 @@ window.__ModuleLoader__.load({
         expandAll: 'Expand all',
         collapseAll: 'Collapse all',
         reloadTitles: 'Reload titles',
+        workspaceOrderBy: 'Workspace order',
+        wsOrderRecent: 'Most recent activity',
+        wsOrderHost: 'Host order',
+        hiddenWsBy: 'Hidden workspaces',
+        hiddenWsHide: 'Hide',
+        hiddenWsSection: 'Show as section',
+        hiddenWsOnly: 'Only hidden',
+        hiddenSection: 'Hidden workspaces ({n})',
+        hiddenTag: 'hidden',
+        hideWorkspace: 'Hide this workspace',
+        restoreWorkspace: 'Restore this workspace',
         rowMenu: 'Row actions',
         pin: 'Pin',
         unpin: 'Unpin',
@@ -243,6 +258,17 @@ window.__ModuleLoader__.load({
         expandAll: '展开全部',
         collapseAll: '全部折叠',
         reloadTitles: '重新加载标题',
+        workspaceOrderBy: '工作区排序',
+        wsOrderRecent: '最近活动',
+        wsOrderHost: 'Host 顺序',
+        hiddenWsBy: '已隐藏工作区',
+        hiddenWsHide: '隐藏',
+        hiddenWsSection: '显示为分区',
+        hiddenWsOnly: '仅显示已隐藏',
+        hiddenSection: '已隐藏工作区 ({n})',
+        hiddenTag: '已隐藏',
+        hideWorkspace: '隐藏此工作区',
+        restoreWorkspace: '恢复显示',
         rowMenu: '会话操作',
         pin: '置顶',
         unpin: '取消置顶',
@@ -270,6 +296,115 @@ window.__ModuleLoader__.load({
 
     const shortId = (id) => String(id == null ? '' : id).replace(/^session-/, '').slice(0, 8)
     const num = (v) => (typeof v === 'number' && isFinite(v) ? v : 0)
+
+    /**
+     * When a session was last active, as far as the client store can tell:
+     * `updatedAt` first, `createdAt` as the documented fallback. Used only to
+     * order WORKSPACES by their most recent member (v1.1.0); a session row that
+     * carries neither sorts oldest, which keeps the order stable rather than
+     * inventing an activity time.
+     */
+    const activityOf = (n) => {
+      if (!n) return 0
+      const updated = num(n.updatedAt)
+      if (updated > 0) return updated
+      // Some row shapes expose the last-event time instead of `updatedAt`.
+      // Only NUMBERS are accepted, so an ISO string can never poison the order.
+      const lastEvent = num(n.lastEventAt) || num(n.raw && n.raw.lastEventAt)
+      if (lastEvent > 0) return lastEvent
+      return num(n.createdAt)
+    }
+
+    /**
+     * Client-side workspace view state (feature spec 2026-11-11 §B.3).
+     *
+     * The Host has no workspace archive/hide API (`workspaceController` only
+     * offers create/rename/delete/insert/archiveSession/unarchiveSession/pin…),
+     * so ordering, hiding and the hidden-section mode live in this plugin and
+     * are mirrored into `localStorage`. Every access is best-effort: private
+     * mode, an embedding page, or a test sandbox without storage simply keeps
+     * the state in memory instead of throwing.
+     */
+    const LS_HIDDEN_WORKSPACES = 'session-tree:hiddenWorkspaces'
+    const LS_WORKSPACE_ORDER = 'session-tree:workspaceOrder'
+    const LS_HIDDEN_MODE = 'session-tree:hiddenWorkspacesMode'
+    /** Group key of the synthetic "Hidden workspaces" section at the very end. */
+    const HIDDEN_SECTION_KEY = '#hidden-workspaces'
+    const WORKSPACE_ORDERS = ['recent', 'host']
+    const HIDDEN_MODES = ['hide', 'section', 'only']
+
+    /** The page's localStorage, or null where it is absent or access-throwing. */
+    function localStore() {
+      try {
+        if (typeof window !== 'undefined' && window && window.localStorage) return window.localStorage
+      } catch (e) {}
+      try {
+        if (typeof localStorage !== 'undefined' && localStorage) return localStorage
+      } catch (e) {}
+      return null
+    }
+
+    /** Non-throwing read; a missing or corrupt value degrades to null. */
+    function storageRead(key) {
+      try {
+        const s = localStore()
+        if (!s || typeof s.getItem !== 'function') return null
+        const v = s.getItem(key)
+        return typeof v === 'string' ? v : null
+      } catch (e) {
+        return null
+      }
+    }
+
+    /** Best-effort write; returns whether it was mirrored. Never throws. */
+    function storageWrite(key, value) {
+      try {
+        const s = localStore()
+        if (!s || typeof s.setItem !== 'function') return false
+        s.setItem(key, value)
+        return true
+      } catch (e) {
+        return false
+      }
+    }
+
+    /** Persisted workspace order: 'recent' (default) or 'host'. */
+    function loadWorkspaceOrder() {
+      const v = storageRead(LS_WORKSPACE_ORDER)
+      return WORKSPACE_ORDERS.indexOf(v) >= 0 ? v : 'recent'
+    }
+
+    /** Persisted hidden-section mode: 'hide' (default), 'section' or 'only'. */
+    function loadHiddenMode() {
+      const v = storageRead(LS_HIDDEN_MODE)
+      return HIDDEN_MODES.indexOf(v) >= 0 ? v : 'hide'
+    }
+
+    /** Persisted hidden workspace ids; deduped, and never a hard failure. */
+    function loadHiddenWorkspaces() {
+      const raw = storageRead(LS_HIDDEN_WORKSPACES)
+      if (!raw) return EMPTY_ARR
+      try {
+        const parsed = JSON.parse(raw)
+        if (!Array.isArray(parsed)) return EMPTY_ARR
+        const out = []
+        for (const v of parsed) {
+          if (typeof v === 'string' && v && out.indexOf(v) < 0) out.push(v)
+        }
+        return out
+      } catch (e) {
+        return EMPTY_ARR
+      }
+    }
+
+    /** Mirror the hidden set into localStorage (memory is still the truth). */
+    function saveHiddenWorkspaces(ids) {
+      const list = []
+      try {
+        for (const v of ids) if (typeof v === 'string' && v) list.push(v)
+      } catch (e) {}
+      return storageWrite(LS_HIDDEN_WORKSPACES, JSON.stringify(list))
+    }
 
     /**
      * Display label for one `WorkspaceView`: its stored title, else the basename
@@ -324,6 +459,12 @@ window.__ModuleLoader__.load({
         catalogLabel: null,
         running: r.running === true,
         updatedAt: num(r.updatedAt),
+        // Only ever consulted as the fallback for a workspace's "most recent
+        // member" ordering (see activityOf).
+        createdAt: num(r.createdAt),
+        // Preserve a numeric last-event time when the row carries one; only
+        // consulted by activityOf (workspace "recent" ordering).
+        lastEventAt: num(r.lastEventAt),
         catalog: Array.isArray(vals && vals.subagentCatalog) ? vals.subagentCatalog : null,
         raw: r,
       }
@@ -527,24 +668,27 @@ window.__ModuleLoader__.load({
         for (const w of wsList) {
           const ids = Array.isArray(w.sessionIds) ? w.sessionIds : EMPTY_ARR
           const members = []
+          // Newest activity across EVERY session the workspace accounts for
+          // (descendants included): that is what "recent" order sorts by.
+          let latest = 0
           for (const id of ids) {
             const n = node.get(id)
             if (!n) continue
             // Accounted even when it is hidden by the archived filter or is a
             // descendant, so it never reappears in Ungrouped.
             accounted.add(id)
+            const at = activityOf(n)
+            if (at > latest) latest = at
             if (isChild(n)) continue
             if (keep(id)) members.push(n)
           }
-          // "Archived only" drops a workspace that would render empty; other
-          // modes keep the bare header, exactly as the shipped browser does.
-          if (archivedMode === 'only' && members.length === 0) continue
           groups.push({
             key: w.workspaceId,
             label: workspaceLabel(w, t('ungrouped')),
             path: typeof w.path === 'string' ? w.path : null,
             members,
             ungrouped: false,
+            latest,
           })
         }
         const ungroupedMembers = []
@@ -575,7 +719,52 @@ window.__ModuleLoader__.load({
             path: null,
             members: ungroupedMembers,
             ungrouped: true,
+            // Synthetic; always rendered last and never ordered.
+            latest: -1,
           })
+        }
+
+        // ---------------------------------------------- v1.1.0 workspace view state
+        // Hiding a workspace is plugin-layer state (the Host has no workspace
+        // archive API), so the split between the ordinary groups and the hidden
+        // section is decided here, purely from the opts.
+        // Duck-typed rather than `instanceof Set`: the seeded value can come from
+        // another realm (the vm test sandbox, a micro-frontend), where a Set is
+        // structurally identical but fails the instance check.
+        const hiddenSet =
+          opts && opts.hiddenWorkspaces && typeof opts.hiddenWorkspaces.has === 'function'
+            ? opts.hiddenWorkspaces
+            : null
+        const hiddenMode =
+          opts && (opts.hiddenMode === 'section' || opts.hiddenMode === 'only')
+            ? opts.hiddenMode
+            : 'hide'
+        const wsOrder = opts && opts.workspaceOrder === 'host' ? 'host' : 'recent'
+        const isHiddenGroup = (g) => !g.ungrouped && !!hiddenSet && hiddenSet.has(g.key)
+        let visibleGroups = groups.filter((g) => !isHiddenGroup(g))
+        let hiddenGroups = EMPTY_ARR
+        if (hiddenMode === 'only') {
+          visibleGroups = EMPTY_ARR
+          hiddenGroups = groups.filter(isHiddenGroup)
+        } else if (hiddenMode === 'section') {
+          hiddenGroups = groups.filter(isHiddenGroup)
+        }
+        // "Archived only" drops a workspace that would render empty; other modes
+        // keep the bare header, exactly as the shipped browser does. Applied to
+        // the ordinary groups only — the hidden section keeps every hidden
+        // workspace so its "restore" action never becomes unreachable.
+        if (archivedMode === 'only') {
+          visibleGroups = visibleGroups.filter((g) => g.ungrouped || g.members.length > 0)
+        }
+        // recent = newest member activity first; Ungrouped is pinned to the end.
+        const byRecent = (a, b) => {
+          if (a.ungrouped) return 1
+          if (b.ungrouped) return -1
+          return b.latest - a.latest
+        }
+        if (wsOrder === 'recent') {
+          visibleGroups = visibleGroups.slice().sort(byRecent)
+          hiddenGroups = hiddenGroups.slice().sort(byRecent)
         }
 
         const out2 = []
@@ -634,30 +823,38 @@ window.__ModuleLoader__.load({
           }
         }
 
-        for (const g of groups) {
+        /**
+         * Emit one workspace group (header + members) at `depth`. The key
+         * namespace differs for the hidden section (`hidden:`) so the same
+         * workspace can never collide with an ordinary group, and the archived
+         * filter has already been applied when `members` was built.
+         */
+        const emitGroup = (g, depth, hiddenGroup) => {
+          const gkey = (hiddenGroup ? 'hidden:' : '') + g.key
           const isCollapsed = !!(collapsed && collapsed.has(g.key))
           out2.push({
-            key: 'ws:' + g.key,
+            key: 'ws:' + gkey,
             kind: 'workspace',
-            depth: 0,
+            depth,
             id: g.key,
             label: g.label,
             path: g.path,
             ungrouped: g.ungrouped,
+            hidden: !!hiddenGroup,
             expanded: !isCollapsed,
             expandable: true,
             childCount: g.members.length,
           })
-          if (isCollapsed) continue
+          if (isCollapsed) return
           if (g.members.length === 0) {
             out2.push({
-              key: 'ws:' + g.key + ':empty',
+              key: 'ws:' + gkey + ':empty',
               kind: 'note',
-              depth: 1,
-              id: 'ws:' + g.key + ':empty',
+              depth: depth + 1,
+              id: 'ws:' + gkey + ':empty',
               label: t('empty'),
             })
-            continue
+            return
           }
           // Search stays shallow and grouped: matching member rows only.
           if (q !== '') {
@@ -665,9 +862,9 @@ window.__ModuleLoader__.load({
               const label = labelFor(m)
               if (!matches(label, m.id)) continue
               out2.push({
-                key: 'ws:' + g.key + '/' + m.id,
+                key: 'ws:' + gkey + '/' + m.id,
                 kind: m.origin === 'subagent' ? 'subagent' : 'session',
-                depth: 1,
+                depth: depth + 1,
                 id: m.id,
                 parentId: m.parentId,
                 mode: m.mode,
@@ -681,12 +878,45 @@ window.__ModuleLoader__.load({
                 expanded: false,
               })
             }
-            continue
+            return
           }
           // Members are already top-level by construction (see `isChild`), so
-          // each one is a root row of its group.
+          // each one is a root row of that group.
           g.members.sort(byOrder)
-          for (const r of g.members) walkG(r, 1, g.key, out2)
+          for (const r of g.members) walkG(r, depth + 1, gkey, out2)
+        }
+
+        for (const g of visibleGroups) emitGroup(g, 0, false)
+
+        // The hidden section is rendered at the very END of the tree, with its
+        // own expand state. While searching in 'section' mode, a hit on a hidden
+        // workspace's NAME reveals it (carrying the "hidden" tag) instead of
+        // leaving it invisible; a hit on one of its sessions reveals it too.
+        if ((hiddenMode === 'section' || hiddenMode === 'only') && hiddenGroups.length > 0) {
+          let shownHidden = hiddenGroups
+          if (q !== '') {
+            shownHidden = hiddenGroups.filter((g) => {
+              if (matches(g.label, g.key)) return true
+              for (const m of g.members) if (matches(labelFor(m), m.id)) return true
+              return false
+            })
+          }
+          if (shownHidden.length > 0) {
+            const sectionCollapsed = !!(collapsed && collapsed.has(HIDDEN_SECTION_KEY))
+            out2.push({
+              key: 'ws:' + HIDDEN_SECTION_KEY,
+              kind: 'hidden-section',
+              depth: 0,
+              id: HIDDEN_SECTION_KEY,
+              label: t('hiddenSection', { n: shownHidden.length }),
+              expanded: !sectionCollapsed,
+              expandable: true,
+              childCount: shownHidden.length,
+            })
+            if (!sectionCollapsed) {
+              for (const g of shownHidden) emitGroup(g, 1, true)
+            }
+          }
         }
         return out2
       }
@@ -870,6 +1100,12 @@ window.__ModuleLoader__.load({
       // subtree is built only when the operator asks for it.
       const [expandedIds, setExpandedIds] = useState(() => new Set())
       const [query, setQuery] = useState('')
+      // v1.1.0 workspace view state: order, hidden set, hidden-section mode.
+      // All three are mirrored into localStorage; when storage is unavailable
+      // they simply degrade to in-memory state (feature spec B.3 / risk D3).
+      const [workspaceOrder, setWorkspaceOrder] = useState(() => loadWorkspaceOrder())
+      const [hiddenWorkspaces, setHiddenWorkspaces] = useState(() => new Set(loadHiddenWorkspaces()))
+      const [hiddenMode, setHiddenMode] = useState(() => loadHiddenMode())
       const requested = useRef(new Set())
 
       const ensureLoaded = useCallback(
@@ -953,6 +1189,37 @@ window.__ModuleLoader__.load({
           return next
         })
       }, [])
+
+      /** Pick the workspace order ('recent' | 'host'); persisted best-effort. */
+      const pickWorkspaceOrder = useCallback((value) => {
+        const next = WORKSPACE_ORDERS.indexOf(value) >= 0 ? value : 'recent'
+        setWorkspaceOrder(next)
+        storageWrite(LS_WORKSPACE_ORDER, next)
+      }, [])
+
+      /** Pick the hidden-workspace view mode ('hide' | 'section' | 'only'). */
+      const pickHiddenMode = useCallback((value) => {
+        const next = HIDDEN_MODES.indexOf(value) >= 0 ? value : 'hide'
+        setHiddenMode(next)
+        storageWrite(LS_HIDDEN_MODE, next)
+      }, [])
+
+      /**
+       * Hide or restore one workspace. There is no Host API for workspace
+       * archiving, so this Set is the single source of truth; localStorage is
+       * only a mirror (a write failure never loses the in-memory state).
+       */
+      const setWorkspaceHidden = useCallback(
+        (key, hidden) => {
+          if (!key) return
+          const next = new Set(hiddenWorkspaces)
+          if (hidden) next.add(key)
+          else next.delete(key)
+          saveHiddenWorkspaces(next)
+          setHiddenWorkspaces(next)
+        },
+        [hiddenWorkspaces],
+      )
 
       const openNode = useCallback(
         (row) => {
@@ -1124,8 +1391,11 @@ window.__ModuleLoader__.load({
           titles: titleMap,
           workspaces: workspaceItems,
           collapsedGroups,
+          workspaceOrder,
+          hiddenWorkspaces,
+          hiddenMode,
         }),
-        [byId, projectionsBySession, expandedIds, query, t, statuses, order, archives, archivedMode, pinned, titleMap, workspaceItems, collapsedGroups],
+        [byId, projectionsBySession, expandedIds, query, t, statuses, order, archives, archivedMode, pinned, titleMap, workspaceItems, collapsedGroups, workspaceOrder, hiddenWorkspaces, hiddenMode],
       )
       /** Every parent id in the current map — the bound for "expand all". */
       const idsWithChildren = useMemo(() => {
@@ -1213,11 +1483,58 @@ window.__ModuleLoader__.load({
           ),
         )
 
+      /** One workspace action from the group row's "…" menu (hide / restore). */
+      const workspaceAction = useCallback(
+        (row, action) => {
+          setRowMenu(null)
+          if (!row || !row.id) return
+          setWorkspaceHidden(row.id, action === 'hide')
+        },
+        [setWorkspaceHidden],
+      )
+
+      const workspaceMenuPanel = (row) =>
+        h(
+          'div',
+          {
+            className: 'st-rowmenu',
+            role: 'menu',
+            onClick: (ev) => {
+              try {
+                ev.stopPropagation()
+              } catch (e) {}
+            },
+          },
+          rowMenuItem(row.hidden ? t('restoreWorkspace') : t('hideWorkspace'), () =>
+            workspaceAction(row, row.hidden ? 'restore' : 'hide'),
+          ),
+        )
+
       const body =
         rows.length === 0
           ? h('div', { className: 'st-note', style: { paddingLeft: 10 } }, query ? t('none') : t('empty'))
           : rows.map((row) => {
               if (row.kind === 'note') return h('div', { className: 'st-note', key: row.key }, row.label)
+              if (row.kind === 'hidden-section') {
+                return h(
+                  'div',
+                  {
+                    className: 'st-row st-group st-group-section',
+                    key: row.key,
+                    role: 'treeitem',
+                    'aria-expanded': row.expanded ? 'true' : 'false',
+                    'data-key': row.key,
+                    'data-kind': 'hidden-section',
+                    'data-depth': String(row.depth),
+                    style: { paddingLeft: 6 + row.depth * 13 },
+                    title: row.label,
+                    onClick: () => toggleGroup(row.id),
+                  },
+                  h('span', { className: 'st-twist' + (row.expanded ? ' st-open' : '') }, '\u25B6'),
+                  h('span', { className: 'st-label' }, row.label),
+                  !row.expanded ? h('span', { className: 'st-count' }, String(row.childCount)) : null,
+                )
+              }
               if (row.kind === 'workspace') {
                 return h(
                   'div',
@@ -1234,6 +1551,9 @@ window.__ModuleLoader__.load({
                     'data-key': row.key,
                     'data-kind': 'workspace',
                     'data-depth': String(row.depth),
+                    // A hidden workspace keeps its own marker so the live DOM (and
+                    // the inspect provider) can tell the hidden section apart.
+                    ...(row.hidden ? { 'data-hidden': 'true' } : {}),
                     style: { paddingLeft: 6 + row.depth * 13 },
                     title: row.path || row.label,
                     onClick: () => toggleGroup(row.id),
@@ -1248,10 +1568,32 @@ window.__ModuleLoader__.load({
                     h('path', { d: 'M1.5 3.2h4.2l1.5 1.9h7.3v7.7h-13z', fill: 'currentColor' }),
                   ),
                   h('span', { className: 'st-label' }, row.label),
+                  row.hidden ? h('span', { className: 'st-tag' }, t('hiddenTag')) : null,
                   row.path && !row.ungrouped
                     ? h('span', { className: 'st-group-path' }, row.path)
                     : null,
                   !row.expanded ? h('span', { className: 'st-count' }, String(row.childCount)) : null,
+                  // Hover-only workspace menu (Ungrouped is synthetic and can
+                  // never be hidden): hide, or restore from inside the section.
+                  row.ungrouped
+                    ? null
+                    : h(
+                        'button',
+                        {
+                          className: 'st-more',
+                          title: row.hidden ? t('restoreWorkspace') : t('hideWorkspace'),
+                          'aria-label': row.hidden ? t('restoreWorkspace') : t('hideWorkspace'),
+                          'aria-expanded': rowMenu === 'ws:' + row.id ? 'true' : 'false',
+                          onClick: (ev) => {
+                            try {
+                              ev.stopPropagation()
+                            } catch (e) {}
+                            setRowMenu(rowMenu === 'ws:' + row.id ? null : 'ws:' + row.id)
+                          },
+                        },
+                        '\u22EF',
+                      ),
+                  rowMenu === 'ws:' + row.id ? workspaceMenuPanel(row) : null,
                 )
               }
               return h(
@@ -1400,10 +1742,25 @@ window.__ModuleLoader__.load({
                 h('div', { className: 'st-menu-title' }, t('orderBy')),
                 menuItem(t('orderUpdated'), order === 'updated', () => setOrder('updated')),
                 menuItem(t('orderTitle'), order === 'title', () => setOrder('title')),
+                h('div', { className: 'st-menu-title' }, t('workspaceOrderBy')),
+                menuItem(t('wsOrderRecent'), workspaceOrder === 'recent', () =>
+                  pickWorkspaceOrder('recent'),
+                ),
+                menuItem(t('wsOrderHost'), workspaceOrder === 'host', () =>
+                  pickWorkspaceOrder('host'),
+                ),
                 h('div', { className: 'st-menu-title' }, t('archivedBy')),
                 menuItem(t('archHide'), archivedMode === 'hide', () => setArchivedMode('hide')),
                 menuItem(t('archShow'), archivedMode === 'show', () => setArchivedMode('show')),
                 menuItem(t('archOnly'), archivedMode === 'only', () => setArchivedMode('only')),
+                h('div', { className: 'st-menu-title' }, t('hiddenWsBy')),
+                menuItem(t('hiddenWsHide'), hiddenMode === 'hide', () => pickHiddenMode('hide')),
+                menuItem(t('hiddenWsSection'), hiddenMode === 'section', () =>
+                  pickHiddenMode('section'),
+                ),
+                menuItem(t('hiddenWsOnly'), hiddenMode === 'only', () =>
+                  pickHiddenMode('only'),
+                ),
                 menuItem(t('expandAll'), false, () => {
                   setExpandedIds(new Set(idsWithChildren))
                   setCollapsedGroups(new Set())
@@ -1411,7 +1768,12 @@ window.__ModuleLoader__.load({
                 menuItem(t('collapseAll'), false, () => {
                   setExpandedIds(new Set())
                   setCollapsedGroups(
-                    new Set(workspaceItems.map((w) => w && w.workspaceId).filter(Boolean)),
+                    new Set(
+                      workspaceItems
+                        .map((w) => w && w.workspaceId)
+                        .filter(Boolean)
+                        .concat([HIDDEN_SECTION_KEY]),
+                    ),
                   )
                 }),
                 menuItem(t('reloadTitles'), false, () => loadTitles()),

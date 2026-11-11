@@ -404,10 +404,36 @@ console.log(
 )
 
 // ------------------------------------------------------------ 沙箱 React
+/**
+ * v1.1.0 的客户端持久化夹具：一个「记录式 localStorage」。
+ *   - getItem 驱动 useState 的初值（例如预置已隐藏工作区）；
+ *   - setItem 把写回记进 lsWrites，供断言「持久化了什么」；
+ *   - 「localStorage 不可用」用例会临时删掉它，验证降级不抛错。
+ */
+const lsData = Object.create(null)
+const lsWrites = []
+function resetStorage() {
+  for (const k of Object.keys(lsData)) delete lsData[k]
+  lsWrites.length = 0
+}
+const localStorageStub = {
+  getItem(key) {
+    return Object.prototype.hasOwnProperty.call(lsData, key) ? lsData[key] : null
+  },
+  setItem(key, value) {
+    lsData[key] = String(value)
+    lsWrites.push({ key, value: String(value) })
+  },
+  removeItem(key) {
+    delete lsData[key]
+  },
+}
+
 let captured = null
 const sandbox = {
   console,
   window: {
+    localStorage: localStorageStub,
     __ModuleLoader__: {
       load(def) {
         captured = def
@@ -435,8 +461,23 @@ let useStateCalls = 0
 const EXPANDED_IDS_HOOK = 9
 /** `collapsedGroups` 的钩子序号（1 基）；工作区分组用它折叠。 */
 const COLLAPSED_GROUPS_HOOK = 3
-/** TreeView 里 useState 的总数（client.js 中 grep 可得）。 */
-const STATE_HOOK_COUNT = 10
+/** `archivedMode` 的钩子序号（1 基）。v1.1.0 起 `'hide'` 初值出现了两次
+ * （archivedMode 与 hiddenMode），所以种子必须能按【位置】区分。 */
+const ARCHIVED_MODE_HOOK = 2
+/** `workspaceOrder` 的钩子序号（1 基，v1.1.0）：'recent' | 'host'。 */
+const WORKSPACE_ORDER_HOOK = 11
+/** `hiddenWorkspaces` 的钩子序号（1 基，v1.1.0）：Set<workspaceId>。 */
+const HIDDEN_WORKSPACES_HOOK = 12
+/** `hiddenMode` 的钩子序号（1 基，v1.1.0）：'hide' | 'section' | 'only'。 */
+const HIDDEN_MODE_HOOK = 13
+/** `menuOpen`（视图菜单）的钩子序号（1 基）。 */
+const MENU_OPEN_HOOK = 4
+/** `rowMenu` 的钩子序号（1 基）：打开某行的 "…" 菜单。 */
+const ROW_MENU_HOOK = 5
+/** `query`（搜索框）的钩子序号（1 基）。 */
+const QUERY_HOOK = 10
+/** TreeView 里 useState 的总数（client.js 中 grep 可得；v1.1.0 +3）。 */
+const STATE_HOOK_COUNT = 13
 /**
  * 按【钩子位置】播种一个 Set 状态。
  *
@@ -457,7 +498,8 @@ const React = {
     const value = typeof init === 'function' ? init() : init
     if (useStateSeed !== null) {
       if (typeof useStateSeed === 'function') {
-        const replaced = useStateSeed(value)
+        // 第二个实参是钩子位置：v1.1.0 起 'hide' 初值有两个，按值匹配会误伤。
+        const replaced = useStateSeed(value, useStateCalls)
         if (replaced !== undefined) return [replaced, () => {}]
       } else {
         // 裸种子（例如直接赋一个 Set）在这里直接失败：它曾经能“碰巧”工作。
@@ -974,10 +1016,14 @@ const t13a = render13({ archivedSessionIds: ['C'], pinnedSessionIds: [] })
 check('默认隐藏已归档会话', !t13a.names.includes('ARCHIVED'), JSON.stringify(t13a.names))
 check('默认按最近更新排序', JSON.stringify(t13a.names) === JSON.stringify(['A', 'B']), JSON.stringify(t13a.names))
 
-const t13b = render13({ archivedSessionIds: ['C'], pinnedSessionIds: [] }, (v) => (v === 'hide' ? 'show' : undefined))
+const t13b = render13({ archivedSessionIds: ['C'], pinnedSessionIds: [] }, (v, i) =>
+  i === ARCHIVED_MODE_HOOK && v === 'hide' ? 'show' : undefined,
+)
 check('切到"显示已归档"后归档会话出现', t13b.names.includes('ARCHIVED'), JSON.stringify(t13b.names))
 
-const t13c = render13({ archivedSessionIds: ['C'], pinnedSessionIds: [] }, (v) => (v === 'hide' ? 'only' : undefined))
+const t13c = render13({ archivedSessionIds: ['C'], pinnedSessionIds: [] }, (v, i) =>
+  i === ARCHIVED_MODE_HOOK && v === 'hide' ? 'only' : undefined,
+)
 check('切到"仅已归档"后只剩归档会话', JSON.stringify(t13c.names) === JSON.stringify(['ARCHIVED']), JSON.stringify(t13c.names))
 
 const t13d = render13({ archivedSessionIds: ['C'], pinnedSessionIds: ['B'] })
@@ -1072,8 +1118,8 @@ if (archItem) {
 
 // 已归档的会话应显示"取消归档"
 const seedArchMenu = seedRowMenuA()
-const t14arch = render14({ archivedSessionIds: ['A'], pinnedSessionIds: [] }, (v) => {
-  if (v === 'hide') return 'show'
+const t14arch = render14({ archivedSessionIds: ['A'], pinnedSessionIds: [] }, (v, i) => {
+  if (i === ARCHIVED_MODE_HOOK && v === 'hide') return 'show'
   return seedArchMenu(v)
 })
 const menuA2 = t14arch.list ? null : t14arch.sink.find((e) => typeof e.props.className === 'string' && e.props.className.includes('st-rowmenu'))
@@ -1318,7 +1364,9 @@ const countOf = (row) => {
   return el ? el.kids.map((c) => c.text).join('') : null
 }
 
-const t18 = renderPanel(undefined, wsById, wsSnap)
+/** v1.1.0：默认排序改成「最近活动」，要测 Host 顺序必须显式播种。 */
+const seedHostOrder = (v, i) => (i === WORKSPACE_ORDER_HOOK && v === 'recent' ? 'host' : undefined)
+const t18 = renderPanel(seedHostOrder, wsById, wsSnap)
 const g18 = t18.rows.filter(isGroupRow)
 check('两个 workspace + 一个未分组 = 3 个分组头', g18.length === 3, `${g18.length} 个`)
 check('分组顺序 = Host 的 items 顺序，未分组固定在最后',
@@ -1358,7 +1406,7 @@ check('折叠状态写进 aria-expanded',
     t18col.rows.find((r) => labelOf(r) === 'Beta').props['aria-expanded'] === 'true')
 
 // 分组顺序跟着 Host 的 items 走，不按名字或时间重排
-const t18rev = renderPanel(undefined, wsById, { ...wsSnap, items: [itemB, itemA] })
+const t18rev = renderPanel(seedHostOrder, wsById, { ...wsSnap, items: [itemB, itemA] })
 check('分组顺序随 items 顺序变化（不做名称/时间排序）',
   JSON.stringify(t18rev.rows.filter(isGroupRow).map(labelOf)) ===
     JSON.stringify(['Beta', 'Alpha', '未分组']),
@@ -1386,11 +1434,15 @@ const notes18 = t18empty.sink.filter(
   (e) => typeof e.props.className === 'string' && e.props.className === 'st-note',
 )
 check('空 workspace 组内给出空态说明', notes18.length === 1, `${notes18.length} 条`)
-const t18only = renderPanel((v) => (v === 'hide' ? 'only' : undefined), wsById, {
-  archivedSessionIds: ['B1'],
-  pinnedSessionIds: [],
-  items: [itemA, itemB],
-})
+const t18only = renderPanel(
+  (v, i) => (i === ARCHIVED_MODE_HOOK && v === 'hide' ? 'only' : undefined),
+  wsById,
+  {
+    archivedSessionIds: ['B1'],
+    pinnedSessionIds: [],
+    items: [itemA, itemB],
+  },
+)
 check('only 模式下没有可见成员的 workspace 被丢弃',
   JSON.stringify(t18only.rows.filter(isGroupRow).map(labelOf)) === JSON.stringify(['Beta']),
   JSON.stringify(t18only.rows.filter(isGroupRow).map(labelOf)))
@@ -1403,6 +1455,302 @@ check('没有 items 时退回扁平布局（不造分组）',
 check('扁平布局下所有行仍在 depth 0',
   t18flat.rows.every((r) => indentOf(r) === 6),
   JSON.stringify(t18flat.rows.map(indentOf)))
+
+// ======================= 测试 19-23：v1.1.0 工作区排序 / 隐藏 / 检索召回
+/**
+ * v1.1.0 的种子约定（全部按【钩子位置】播种，不按值猜）：
+ *   - 工作区排序是第 11 个 useState，缺省 'recent'；
+ *   - 已隐藏工作区集合是第 12 个，缺省空 Set；
+ *   - 已隐藏分区三态是第 13 个，缺省 'hide'（与 archivedMode 的 'hide' 同值，
+ *     按值播种会同时命中两个钩子，所以必须带位置）。
+ */
+const combineSeeds = (...fns) => (v, i) => {
+  for (const fn of fns) {
+    const replaced = fn(v, i)
+    if (replaced !== undefined) return replaced
+  }
+  return undefined
+}
+const seedQuery = (text) => (v, i) => (i === QUERY_HOOK && v === '' ? text : undefined)
+const seedMenuOpen = (v, i) => (i === MENU_OPEN_HOOK && v === false ? true : undefined)
+const seedHiddenA = (v, i) => (i === HIDDEN_WORKSPACES_HOOK ? new Set(['w-a']) : undefined)
+const seedHiddenMode = (mode) => (v, i) => (i === HIDDEN_MODE_HOOK && v === 'hide' ? mode : undefined)
+const seedRowMenuWs = (key) => (v, i) => (i === ROW_MENU_HOOK && v === null ? key : undefined)
+/** 菜单项的可见文字（跳过左边的勾选格 —— 视图菜单的 ✓ 不是标签）。 */
+const menuTextOf = (el) => {
+  const label = el.kids.find(
+    (c) => !String((c.props && c.props.className) || '').includes('st-menu-check'),
+  )
+  return label ? label.kids.map((x) => x.text).join('') : ''
+}
+const menuLabelsOf = (panel) =>
+  panel
+    ? panel.kids
+        .filter((k) => String(k.props.className || '').includes('st-menu-item'))
+        .map(menuTextOf)
+    : []
+const menuTitlesOf = (panel) =>
+  panel
+    ? panel.kids
+        .filter((k) => String(k.props.className || '') === 'st-menu-title')
+        .map((k) => k.kids.map((c) => c.text).join(''))
+    : []
+/** 按可见标签在菜单面板里找到那一项（找不到 → null）。 */
+const menuItemByLabel = (panel, label) => {
+  if (!panel) return null
+  return panel.kids.find(
+    (k) => String(k.props.className || '').includes('st-menu-item') && menuTextOf(k) === label,
+  ) || null
+}
+
+// ------------------------------------------------- test 19: 工作区排序（recent / host）
+console.log('\n=== 测试 19：工作区排序 —— recent（缺省）按成员会话最近活动 ===')
+const wsRecentById = {
+  R1: { id: 'R1', displayTitle: 'R one', updatedAt: 10, projectionValues: {} },
+  O1: { id: 'O1', displayTitle: 'O one', updatedAt: 90, projectionValues: {} },
+  L1: { id: 'L1', displayTitle: 'Loose', updatedAt: 999, projectionValues: {} },
+}
+const wsRecentSnap = {
+  archivedSessionIds: [],
+  pinnedSessionIds: [],
+  // Host 顺序 = Recent, Old；最近活动顺序恰好相反（Old 的成员更新）。
+  items: [wsItem('w-r', 'C:\\proj\\recent', 'Recent', ['R1']), wsItem('w-o', 'C:\\proj\\old', 'Old', ['O1'])],
+}
+resetStorage()
+const t19 = renderPanel(undefined, wsRecentById, wsRecentSnap)
+const g19 = t19.rows.filter(isGroupRow).map(labelOf)
+check(
+  'recent（缺省）：工作区按成员会话最新活动倒序（Old 90 > Recent 10）',
+  JSON.stringify(g19) === JSON.stringify(['Old', 'Recent', '未分组']),
+  JSON.stringify(g19),
+)
+check(
+  'Ungrouped 恒最后（游离会话 updatedAt 999 也不参与排序）',
+  g19[g19.length - 1] === '未分组',
+  JSON.stringify(g19),
+)
+const t19host = renderPanel(seedHostOrder, wsRecentById, wsRecentSnap)
+check(
+  'host：恢复 Host items 顺序（Recent, Old）',
+  JSON.stringify(t19host.rows.filter(isGroupRow).map(labelOf)) ===
+    JSON.stringify(['Recent', 'Old', '未分组']),
+  JSON.stringify(t19host.rows.filter(isGroupRow).map(labelOf)),
+)
+const wsCreatedAtById = {
+  C1: { id: 'C1', displayTitle: 'C one', createdAt: 500, projectionValues: {} },
+  C2: { id: 'C2', displayTitle: 'C two', createdAt: 100, projectionValues: {} },
+}
+const t19created = renderPanel(undefined, wsCreatedAtById, {
+  archivedSessionIds: [],
+  pinnedSessionIds: [],
+  items: [wsItem('w-c2', 'C:\\proj\\c2', 'C-two', ['C2']), wsItem('w-c1', 'C:\\proj\\c1', 'C-one', ['C1'])],
+})
+check(
+  '成员会话缺 updatedAt 时回退 createdAt 参与 recent 排序',
+  JSON.stringify(t19created.rows.filter(isGroupRow).map(labelOf)) ===
+    JSON.stringify(['C-one', 'C-two']),
+  JSON.stringify(t19created.rows.filter(isGroupRow).map(labelOf)),
+)
+
+// ------------------------------------------- test 20: 隐藏 / 隐藏分区 / 恢复
+console.log('\n=== 测试 20：工作区隐藏、隐藏分区、恢复与搜索召回 ===')
+const t20hide = renderPanel(seedHiddenA, wsById, wsSnap)
+const g20hide = t20hide.rows.filter(isGroupRow).map(labelOf)
+check(
+  'hide（缺省三态）：被隐藏的工作区不再渲染',
+  JSON.stringify(g20hide) === JSON.stringify(['Beta', '未分组']),
+  JSON.stringify(g20hide),
+)
+check(
+  'hide 态：DOM 里没有隐藏分区',
+  !t20hide.rows.some((r) => r.props['data-kind'] === 'hidden-section' || r.props['data-hidden'] === 'true'),
+)
+const t20sec = renderPanel(combineSeeds(seedHiddenA, seedHiddenMode('section')), wsById, wsSnap)
+const section20 = t20sec.rows.find((r) => r.props['data-kind'] === 'hidden-section')
+check(
+  'section：隐藏分区标题「已隐藏工作区 (1)」渲染在树末尾',
+  !!section20 &&
+    labelOf(section20) === '已隐藏工作区 (1)' &&
+    section20.props['data-depth'] === '0' &&
+    t20sec.rows.indexOf(section20) === t20sec.rows.length - 4,
+  section20 ? `${labelOf(section20)} @${t20sec.rows.indexOf(section20)}/${t20sec.rows.length}` : '(无)',
+)
+const alphaHiddenRow = t20sec.rows.find((r) => r.props['data-hidden'] === 'true')
+const alphaHiddenTag = alphaHiddenRow
+  ? alphaHiddenRow.kids.find((k) => String(k.props.className) === 'st-tag')
+  : null
+check(
+  '隐藏分区内的工作区行带「已隐藏」标记（data-hidden + st-tag）',
+  !!alphaHiddenRow &&
+    labelOf(alphaHiddenRow) === 'Alpha' &&
+    !!alphaHiddenTag &&
+    alphaHiddenTag.kids.map((c) => c.text).join('') === '已隐藏',
+  alphaHiddenRow ? labelOf(alphaHiddenRow) : '(无)',
+)
+check(
+  '隐藏分区内的工作区行的缩进比分区标题深一层',
+  !!alphaHiddenRow && indentOf(alphaHiddenRow) === 19,
+  alphaHiddenRow ? String(indentOf(alphaHiddenRow)) : '(无)',
+)
+resetStorage()
+const t20restore = renderPanel(
+  combineSeeds(seedHiddenA, seedHiddenMode('section'), seedRowMenuWs('ws:w-a')),
+  wsById,
+  wsSnap,
+)
+const restorePanel = t20restore.sink.find((e) => String(e.props.className).includes('st-rowmenu'))
+const restoreItem = menuItemByLabel(restorePanel, '恢复显示')
+check('隐藏分区内的 "…" 菜单提供「恢复显示」', !!restoreItem, JSON.stringify(menuLabelsOf(restorePanel)))
+resetStorage()
+if (restoreItem) restoreItem.props.onClick({ stopPropagation() {} })
+check(
+  '「恢复显示」把该工作区从 localStorage["session-tree:hiddenWorkspaces"] 移除',
+  lsWrites.some((w) => w.key === 'session-tree:hiddenWorkspaces' && w.value === '[]'),
+  JSON.stringify(lsWrites),
+)
+resetStorage()
+const t20hideMenu = renderPanel(seedRowMenuWs('ws:w-a'), wsById, wsSnap)
+const hidePanel = t20hideMenu.sink.find((e) => String(e.props.className).includes('st-rowmenu'))
+const hideItem = menuItemByLabel(hidePanel, '隐藏此工作区')
+check('未隐藏工作区的 "…" 菜单提供「隐藏此工作区」', !!hideItem, JSON.stringify(menuLabelsOf(hidePanel)))
+resetStorage()
+if (hideItem) hideItem.props.onClick({ stopPropagation() {} })
+check(
+  '「隐藏此工作区」写入 localStorage["session-tree:hiddenWorkspaces"]',
+  lsWrites.some((w) => w.key === 'session-tree:hiddenWorkspaces' && w.value === '["w-a"]'),
+  JSON.stringify(lsWrites),
+)
+const t20only = renderPanel(combineSeeds(seedHiddenA, seedHiddenMode('only')), wsById, wsSnap)
+check(
+  'only（仅显示已隐藏）：只渲染隐藏分区及其工作区',
+  JSON.stringify(t20only.rows.filter(isGroupRow).map(labelOf)) ===
+    JSON.stringify(['已隐藏工作区 (1)', 'Alpha']) &&
+    !t20only.rows.some((r) => labelOf(r) === 'Beta'),
+  JSON.stringify(t20only.rows.filter(isGroupRow).map(labelOf)),
+)
+const t20search = renderPanel(
+  combineSeeds(seedHiddenA, seedHiddenMode('section'), seedQuery('alpha')),
+  wsById,
+  wsSnap,
+)
+const section20s = t20search.rows.find((r) => r.props['data-kind'] === 'hidden-section')
+const alphaHidden20s = t20search.rows.find((r) => r.props['data-hidden'] === 'true')
+check(
+  'section 态下搜索命中隐藏工作区名称 → 显示该工作区并带「已隐藏」标记',
+  !!section20s && !!alphaHidden20s && labelOf(alphaHidden20s) === 'Alpha',
+  `分区=${!!section20s} 工作区=${alphaHidden20s ? labelOf(alphaHidden20s) : '(无)'}`,
+)
+const t20searchHide = renderPanel(combineSeeds(seedHiddenA, seedQuery('alpha')), wsById, wsSnap)
+check(
+  'hide 态下搜索不会召回隐藏工作区（三态语义不串）',
+  !t20searchHide.rows.some(
+    (r) => r.props['data-kind'] === 'hidden-section' || r.props['data-hidden'] === 'true',
+  ),
+)
+
+// ------------------------------------------- test 21: 视图菜单整合与持久化
+console.log('\n=== 测试 21：视图菜单整合（新增项 + 现有项不回归 + 持久化）===')
+resetStorage()
+const t21 = renderPanel(seedMenuOpen, wsById, wsSnap)
+const viewMenu = t21.sink.find((e) => String(e.props.className) === 'st-menu')
+const titles21 = menuTitlesOf(viewMenu)
+const labels21 = menuLabelsOf(viewMenu)
+check(
+  '视图菜单新增分区标题：工作区排序 / 已隐藏工作区',
+  titles21.includes('工作区排序') && titles21.includes('已隐藏工作区'),
+  JSON.stringify(titles21),
+)
+check(
+  '视图菜单包含工作区排序两态：最近活动 / Host 顺序',
+  labels21.includes('最近活动') && labels21.includes('Host 顺序'),
+  JSON.stringify(labels21),
+)
+check(
+  '视图菜单包含已隐藏工作区三态：隐藏 / 显示为分区 / 仅显示已隐藏',
+  ['隐藏', '显示为分区', '仅显示已隐藏'].every((l) => labels21.includes(l)),
+  JSON.stringify(labels21),
+)
+check(
+  '现有菜单项不回归（排序方式 / 已归档三态 / 展开折叠 / 刷新标题）',
+  ['最近更新', '按名称', '隐藏已归档', '全部对话（显示已归档）', '仅显示已归档', '展开全部', '全部折叠', '重新加载标题'].every(
+    (l) => labels21.includes(l),
+  ),
+  JSON.stringify(labels21),
+)
+resetStorage()
+const hostOrderItem = menuItemByLabel(viewMenu, 'Host 顺序')
+if (hostOrderItem) hostOrderItem.props.onClick()
+check(
+  '选择「Host 顺序」写入 localStorage["session-tree:workspaceOrder"]',
+  lsWrites.some((w) => w.key === 'session-tree:workspaceOrder' && w.value === 'host'),
+  JSON.stringify(lsWrites),
+)
+resetStorage()
+const onlyHiddenItem = menuItemByLabel(viewMenu, '仅显示已隐藏')
+if (onlyHiddenItem) onlyHiddenItem.props.onClick()
+check(
+  '选择「仅显示已隐藏」写入 localStorage["session-tree:hiddenWorkspacesMode"]',
+  lsWrites.some((w) => w.key === 'session-tree:hiddenWorkspacesMode' && w.value === 'only'),
+  JSON.stringify(lsWrites),
+)
+
+// ------------------------------- test 22: 已归档会话的检索召回（B.3.4）
+console.log('\n=== 测试 22：已归档会话在 show 态下可被搜索召回 ===')
+resetStorage()
+const byId22 = {
+  A: { id: 'A', displayTitle: 'Alpha', updatedAt: 900, projectionValues: {} },
+  C: { id: 'C', displayTitle: 'ARCHIVED', updatedAt: 100, projectionValues: {} },
+}
+const t22 = renderPanel(
+  combineSeeds(
+    (v, i) => (i === ARCHIVED_MODE_HOOK && v === 'hide' ? 'show' : undefined),
+    seedQuery('archived'),
+  ),
+  byId22,
+  { archivedSessionIds: ['C'], pinnedSessionIds: [] },
+)
+check(
+  'show 态下搜索覆盖已归档会话（ARCHIVED 被召回）',
+  t22.rows.map(labelOf).includes('ARCHIVED'),
+  JSON.stringify(t22.rows.map(labelOf)),
+)
+
+// ------------------------- test 23: localStorage 不可用 → 内存降级不抛错
+console.log('\n=== 测试 23：localStorage 不可用时内存降级（B.3 / 风险 D3）===')
+const savedLocalStorage = sandbox.window.localStorage
+delete sandbox.window.localStorage
+resetStorage()
+let degradeThrew = null
+let degradeRows = null
+try {
+  degradeRows = renderPanel(undefined, wsRecentById, wsRecentSnap)
+} catch (e) {
+  degradeThrew = e
+}
+check('localStorage 缺失时渲染不抛错', degradeThrew === null, degradeThrew && degradeThrew.message)
+check(
+  'localStorage 缺失时仍按缺省 recent 排序工作',
+  !!degradeRows &&
+    JSON.stringify(degradeRows.rows.filter(isGroupRow).map(labelOf)) ===
+      JSON.stringify(['Old', 'Recent', '未分组']),
+  degradeRows ? JSON.stringify(degradeRows.rows.filter(isGroupRow).map(labelOf)) : '(无)',
+)
+let degradeClickThrew = null
+try {
+  const t23 = renderPanel(seedRowMenuWs('ws:w-a'), wsById, wsSnap)
+  const panel23 = t23.sink.find((e) => String(e.props.className).includes('st-rowmenu'))
+  const item23 = menuItemByLabel(panel23, '隐藏此工作区')
+  if (item23) item23.props.onClick({ stopPropagation() {} })
+} catch (e) {
+  degradeClickThrew = e
+}
+check(
+  'localStorage 缺失时「隐藏此工作区」不抛错（写失败被吞掉，内存状态仍生效）',
+  degradeClickThrew === null,
+  degradeClickThrew && degradeClickThrew.message,
+)
+sandbox.window.localStorage = savedLocalStorage
+resetStorage()
 
 // ------------------------------------------------- 套件自检：90 项一条不少
 console.log('\n=== 测试 M：套件自检 ===')

@@ -18,6 +18,7 @@ A DeepSeek Harness profile bundle that turns the left sidebar into a **session t
 |---|---|
 | Tree view | Renders every session, with `origin: 'subagent'` children nested under their durable parent (`parentId`), to arbitrary depth. |
 | Workspace grouping | Sessions are grouped under the workspaces the Host reports, one collapsible header per workspace showing its name, path, and — when collapsed — its session count. Membership follows `workspace.sessionIds`, exactly as the shipped browser decides it. Sessions no workspace accounts for collect under **Ungrouped**, always rendered last. |
+| Workspace order & hiding | Workspace groups are ordered by their **most recently active member session** by default, or by the Host's own order. Any workspace can be hidden from its own row menu, and hidden workspaces are listed in a collapsible **Hidden workspaces (N)** section at the end of the tree — or as the only content — where they can be restored. Both choices are client-side and survive a page refresh. |
 | Lazy expansion | Nodes start collapsed. Expanding one builds its subtree; indentation grows 13 px per depth level (8 levels maximum). |
 | Bounded fan-out | A node renders at most 300 child rows per level; the remainder is reported as an explicit `N more omitted` notice instead of being dropped silently. |
 | Four-state status dot | Per row: running (blue, pulsing), completed but not viewed yet (green), completed and viewed (gray), waiting for your answer (orange). Colours come from DSH theme tokens and follow the light/dark theme. |
@@ -89,9 +90,22 @@ Optional: confirm the Host half is mounted by asking an agent to list its tools;
 The `…` button in the header opens:
 
 - **Order by** — *Last updated* or *Title*. Pinned sessions lead the list in either order.
+- **Workspace order** — *Most recent activity* (default: newest member activity first) or *Host order*. Ungrouped always stays last.
 - **Archived sessions** — *Hide archived* (default), *Show archived*, or *Archived only*.
+- **Hidden workspaces** — *Hide* (default), *Show as section*, or *Only hidden*.
 - **Expand all** / **Collapse all**.
 - **Reload titles** — re-reads every session's current title from the Host (see [How it works](#how-it-works)).
+- **Workspace actions** — workspace headers have their own `…` button on hover: **Hide this workspace**, and **Restore this workspace** inside the hidden section.
+
+### Workspace order, hiding and recall
+
+Workspace order and workspace hiding are **client-side view state**: neither is written back to the Host, and both are mirrored into `localStorage` (order under `session-tree:workspaceOrder`, hidden ids under `session-tree:hiddenWorkspaces`, the section mode under `session-tree:hiddenWorkspacesMode`). If `localStorage` is unavailable — a private window, an embedding page — everything still works for the current page and simply does not survive a refresh.
+
+- **Order.** By default workspace groups are ordered by their most recently active member session (newest first, falling back to the session's creation time when it has no update time). Pick **Workspace order → Host order** in the header `…` menu to get the Host's order back. **Ungrouped** always stays last either way.
+- **Hide a workspace.** Hover a workspace header, click its `…` button, then **Hide this workspace**. The workspace and its sessions leave the tree; the choice is remembered. Hiding never deletes or archives anything on the Host — it is a view filter.
+- **Recall a hidden workspace.** The header `…` menu's **Hidden workspaces** section has three states: *Hide* (hidden workspaces are not listed at all), *Show as section* (they appear in a **Hidden workspaces (N)** section at the end of the tree), *Only hidden* (only that section is listed). Inside the section, each hidden workspace keeps its own `…` button with **Restore this workspace**.
+- **Search reach.** While the section is shown, a search that matches a hidden workspace's **name** also reveals that workspace, carrying a `hidden` tag, so a hidden workspace is never lost. Archived sessions stay searchable too: with **Archived sessions → Show archived / Archived only**, the search box covers them like any other row and their row `…` menu offers **Unarchive**.
+- **Ungrouped** is synthetic and can never be hidden.
 
 ### Per-row actions
 
