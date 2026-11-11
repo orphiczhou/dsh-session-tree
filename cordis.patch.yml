@@ -1,9 +1,15 @@
 # Patch layer contributed by this bundle.
 #
 # Installing the package records it in the profile's `dsh.profile.bundles`; this
-# file is the ordered layer that bundle then contributes: one Cordis row, which
-# the Loader imports from this same package (`exports["."]` -> index.js) for the
-# Host half, while the browser half is fetched through `exports["./client"]`.
+# file is the ordered layer that bundle then contributes. Row 1 is the Host/Client
+# half itself, imported from this same package (`exports["."]` -> index.js for the
+# Host half; the browser half is fetched through `exports["./client"]`).
+#
+# Row 2 mounts the deployment's filesystem Skill provider on this package's
+# bundled `skills/` directory, so an agent can discover how to use the tools from
+# the Skill catalog (same pattern as the archify bundle). The directory is
+# resolved through the installed package identity, never by string-joining a
+# path onto `baseUrl`.
 #
 # To turn the plugin off without uninstalling it, disable the `session-tree` row
 # in the profile (the shipped WorkspaceBrowser at priority 0 takes the seat back
@@ -11,3 +17,10 @@
 - insert:
     - id: session-tree
       name: '@orphiczhou/dsh-session-tree'
+    - id: session-tree-skills
+      name: '@deepseek-ai/dsh-skill-filesystem'
+      config:
+        providerName: session-tree
+        includeDefaultRoots: false
+        watch: false
+        bundledSkillDir: !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('@orphiczhou/dsh-session-tree/package.json')), 'skills')

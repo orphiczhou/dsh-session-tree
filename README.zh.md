@@ -31,6 +31,7 @@
 | `tree_send` 工具 | 宿主半工具：向树里任意可续聊的子会话投递消息，兄弟会话也可以。 |
 | `session_handoff` 工具 | 宿主半工具：写下 `HANDOFF-*.md` 交接文件，并启动**同层级**接替会话——子会话在同一个活着的父会话下生成兄弟，根会话（或父已不在）生成新根会话。接替会话继承同一个工作目录与侧栏工作区归属、同一个 Agent 预设（工作模式，因此工具集相同）、同一个权限模式（沙箱 + 审批）、同一个模型与思考等级。 |
 | `SessionTree` 检视 provider | 只读的 Cordis Inspect provider：回报左栏**实际渲染成了什么**——行序、层级、缩进、几何与计算样式——让 agent 用已有的 `cordis_inspect_query` 自己看真实应用里的树，而不必让你念屏幕。 |
+| 随包 Skill（`session-handoff`） | 包内自带 `skills/session-handoff/SKILL.md`，并通过宿主的 filesystem Skill provider 挂载：新会话从 Skill 目录就能发现交接纪律（status → 50% 阈值 → 写交接文件 → 启动接替 → 验收），不需要别人先把工具名喂给它。 |
 
 ## 安装
 
@@ -74,7 +75,7 @@ dsh plugin --profile <name> add /absolute/path/to/dsh-session-tree
 - 展开任意一个右侧带子会话数量的行，子会话会嵌套显示在下面。
 - 如果左栏和自带的会话列表一模一样，去 **Plugins** 页面确认 id 为 `session-tree` 的那一行是启用状态。已启用但仍无变化，见[疑难排查](#疑难排查)。
 
-可选：让智能体列一下自己的工具，`tree_send` 与 `session_handoff` 在列表里就说明宿主半挂上了。（`tree_send` 需要 `tools`、`subagents`、`sessionQuery` 三个服务都存在；`session_handoff` 需要 `tools`、`subagents`、`agents`、`tokenMeter`。缺服务的组合里插件照常加载，只是不提供它无法支持的工具。）
+可选：让智能体列一下自己的工具，`tree_send` 与 `session_handoff` 在列表里就说明宿主半挂上了。（`tree_send` 需要 `tools`、`subagents`、`sessionQuery` 三个服务都存在；`session_handoff` 需要 `tools`、`subagents`、`agents`、`tokenMeter`。缺服务的组合里插件照常加载，只是不提供它无法支持的工具。）新会话的 Skill 目录里还应当能看到 `session-handoff`；若你的组合无法挂载 filesystem Skill provider，工具照常工作，只是少这一条目录项。
 
 ## 使用
 
@@ -199,6 +200,12 @@ A  （顶层会话，由它来调用 tree_send）
 - 启动失败保留已经写好的文件，返回 `spawn_error`。
 - 预设无法再挂载、权限事件无法记录、或工作区挂载失败时，交接仍然成功，但会通过 `successor.preset_error` / `permission_error` / `workspace.reason` 以及人类可读的 `warnings[]` 明确暴露。
 
+### 随包技能（Bundled Skill）
+
+本包自带一个 Skill：`skills/session-handoff/SKILL.md`；`cordis.patch.yml` 的第二条 insert 把宿主的 filesystem Skill provider（`@deepseek-ai/dsh-skill-filesystem`，`providerName: session-tree`，`includeDefaultRoots: false`）挂到该目录。Skill 的 `whenToUse` 按用户真实说法编写——「继续干」「快到上限了」「交接给新会话」「上下文 50%」——所以**新开的 agent 从 Skill 目录就能发现交接纪律**，不需要别人先把工具名喂给它。正文覆盖：status 检查、50% 规则、交接文件参数模板、root/sibling 层级矩阵、接替会话继承什么、如何验收、`degraded`/`warnings` 怎么读。
+
+Skill 是插件包的一部分，与工具同版本发布：`package.json.files` 包含 `skills`，注册 Skill provider 的正是本 bundle 的 patch 行。若某个组合根本没有 `@deepseek-ai/dsh-skill-filesystem` 这一行，插件与工具照常工作，只是 Skill 目录里少这一条。
+
 ## 实现要点
 
 - **席位。** 插件占用 `sidebar.workspaces`——左栏那个单占用（single）席位，优先级 **-100**。single 席位取**优先级最低**的注册者渲染，而在已被占用的优先级上注册会**在加载时抛错**，所以必须用一个不同的优先级。自带的 `WorkspaceBrowser` 是 0，于是本插件拿到席位，而自带那一行仍然留在册——停用本插件，自带侧栏原样回来。
@@ -215,7 +222,7 @@ A  （顶层会话，由它来调用 tree_send）
 
 这是刻意的。DSH 唯一强制检查的兼容字段，就是 `@deepseek-ai/dsh` 与 `@deepseek-ai/dsh-*` 上的 `peerDependencies`，它会拿正在运行的运行时版本做 semver 匹配，任何一个范围不匹配就跳过该 bundle。**没有声明 DSH peer 就不构成任何约束**，所以不声明意味着运行升级时本插件不会硬失败。
 
-这句话说的是兼容**闸门**，不是“以后每个 DSH 版本都能用”的承诺。插件使用的客户端服务是 `slots`、`sessions`、`uiWorkspace`、`sidebarRight`、`locale`，宿主侧用的是 `subagents.prompt`、`sessionQuery.filterSessions`、`agents.create`、`tokenMeter.contextPressure`、`agentPresets`、`permissionPresets`、`workspaceRegistry`；如果将来的 DSH 改动了这些接口，相应功能会失效，尽管安装依然成功。需要可复现的安装就钉住一个 commit（`github:orphiczhou/dsh-session-tree#<sha>`）。
+这句话说的是兼容**闸门**，不是“以后每个 DSH 版本都能用”的承诺。插件使用的客户端服务是 `slots`、`sessions`、`uiWorkspace`、`sidebarRight`、`locale`，宿主侧用的是 `subagents.prompt`、`sessionQuery.filterSessions`、`agents.create`、`tokenMeter.contextPressure`、`agentPresets`、`permissionPresets`、`workspaceRegistry`；另外 bundle patch 还插入一行 `@deepseek-ai/dsh-skill-filesystem` 来挂载随包 Skill（该包缺席时工具照常、只是没有 Skill 目录项）。如果将来的 DSH 改动了这些接口，相应功能会失效，尽管安装依然成功。需要可复现的安装就钉住一个 commit（`github:orphiczhou/dsh-session-tree#<sha>`）。
 
 ## 停用 / 卸载
 
@@ -238,7 +245,7 @@ A  （顶层会话，由它来调用 tree_send）
 启用与停用是即时作用于当前页面的。若没看到变化，刷新一次页面。
 
 **改了宿主半（`index.js`），工具没变化。**
-Loader 对已导入的宿主模块是**按包名缓存**的，所以改已安装包的宿主半必须重启 DSH 才生效——停用再启用、卸载重装、把入口指向新文件路径，拿到的都还是缓存里那一代。只有换一个新的包名才能绕过这份缓存。客户端半不受此影响，刷新页面即可。
+Loader 对已导入的宿主模块是**按包名缓存**的，单纯保存文件不会让它重新求值——即使包在 profile 的 `hmr.root` 内（2026-11-11 实测）。请把插件行停用再启用（Plugins 页面的 `session-tree`，或对 `include:session-tree` 条目执行 `plugin_manager set_plugin enabled:false` → `true`），这一次重载才会加载新的宿主模块；重启 DSH 同样有效。bundle patch（例如 Skill provider 行）的改动同理。客户端半不受此影响，刷新页面即可。
 
 **某一行显示的文字不是会话标题。**
 这是有意为之，而且与应用其他地方保持一致。对子会话来说，DSH 在主窗口标题栏和右侧栏标签里显示的本来就是子智能体的**描述符标签**（创建它时的委派标签），**不是** `session/title`。本插件渲染同一个字符串，正是为了让行上的文字和点开后看到的东西对得上。会话自身的标题作为次要信息保留：以 `标签 — 标题` 的形式出现在该行的 tooltip 里。普通（非子会话）行显示的是持久化的会话标题。
@@ -257,9 +264,10 @@ Loader 对已导入的宿主模块是**按包名缓存**的，所以改已安装
 dsh-session-tree/
 ├── index.js                 # 宿主半：tree_send 与 session_handoff 工具
 ├── client.js                # 客户端半：整个侧栏 UI（浏览器 bundle）
-├── cordis.patch.yml         # 本 bundle 贡献的唯一一条 Cordis 行
+├── cordis.patch.yml         # 本 bundle 贡献的两条 Cordis 行（插件 + Skill provider）
 ├── package.json             # 清单：dsh.bundle、dsh.client、exports
 ├── locale/{en,zh}.json      # Plugins 页面的展示元数据
+├── skills/session-handoff/SKILL.md  # 随包 Skill：交接纪律（由 patch 第二行挂载）
 ├── icon.svg                 # bundle 图标
 ├── scripts/verify-bundle.mjs  # 清单自检
 ├── test/render.test.cjs     # headless 渲染测试
@@ -284,6 +292,12 @@ node test/handoff.test.js
 ```
 
 它们用 `node:test` 与纯服务 mock——不创建真实会话、不加载任何 `@deepseek-ai/*` 包；文件写到一次性临时目录。
+
+检查随包 Skill 的打包正确性（frontmatter 可解析、`package.json.files` 会发布它、bundle patch 把 filesystem Skill provider 挂到该目录）：
+
+```sh
+node test/skills.test.cjs
+```
 
 按 DSH 安装 bundle 时实际执行的规则自检清单（patch 文件存在且可解析、`exports["./client"]` 与 `dsh.client.platform`、客户端模块 id 与包名一致、图标大小、locale 文件、以及声明了哪些 DSH peer）：
 

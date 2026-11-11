@@ -31,6 +31,7 @@ A DeepSeek Harness profile bundle that turns the left sidebar into a **session t
 | `tree_send` tool | Host-side tool that delivers a message to any continuable subagent session in the tree, including a sibling. |
 | `session_handoff` tool | Host-side tool that writes a `HANDOFF-*.md` recap and starts a fresh successor at the same level — a sibling under the same live parent for a child session, a new root session for a root (or when the parent is gone). The successor inherits the same working directory, sidebar workspace membership, Agent preset (`work mode`, and therefore the same tool set), permission preset (sandbox + approval), model and reasoning effort. |
 | `SessionTree` inspect provider | Read-only Cordis Inspect provider that reports what the sidebar **actually rendered** — row order, level, indentation, geometry and computed styles — so an agent can inspect the live tree through `cordis_inspect_query` instead of asking you to read the screen. |
+| Bundled Skill (`session-handoff`) | Ships `skills/session-handoff/SKILL.md` and mounts it through the deployment's filesystem Skill provider, so a fresh agent discovers the handoff discipline (status → 50% threshold → recap file → successor → verification) from the Skill catalog instead of being told tool names. |
 
 ## Install
 
@@ -74,7 +75,7 @@ The path must be absolute; pnpm records it as a `link:` dependency.
 - Expand any row that shows a child count. Subagent rows appear nested underneath.
 - If the sidebar still looks exactly like the shipped session list, check the **Plugins** page: the row named `session-tree` must be enabled. If it is enabled and the sidebar is unchanged, see [Troubleshooting](#troubleshooting).
 
-Optional: confirm the Host half is mounted by asking an agent to list its tools; `tree_send` and `session_handoff` appear in the list. (`tree_send` is registered when the `tools`, `subagents`, and `sessionQuery` services are all present; `session_handoff` when `tools`, `subagents`, `agents`, and `tokenMeter` are. In a composition without them the plugin still loads and simply offers the tools it can support.)
+Optional: confirm the Host half is mounted by asking an agent to list its tools; `tree_send` and `session_handoff` appear in the list. (`tree_send` is registered when the `tools`, `subagents`, and `sessionQuery` services are all present; `session_handoff` when `tools`, `subagents`, `agents`, and `tokenMeter` are. In a composition without them the plugin still loads and simply offers the tools it can support.) A fresh session's Skill catalog should also list `session-handoff`; if the bundle patch row cannot mount the filesystem Skill provider in your composition, the tools still work and only the catalog entry is missing.
 
 ## Usage
 
@@ -199,6 +200,12 @@ A sibling successor inherits the preset composition and permission scope through
 - A spawn failure keeps the already-written file and returns `spawn_error`.
 - A preset that can no longer be mounted, a permission event that cannot be recorded, or a workspace attach that fails keep the handoff successful but surface `successor.preset_error` / `permission_error` / `workspace.reason` plus a human-readable `warnings[]` entry.
 
+### Bundled Skill
+
+The package ships one Skill, `skills/session-handoff/SKILL.md`, and its `cordis.patch.yml` mounts the deployment's filesystem Skill provider (`@deepseek-ai/dsh-skill-filesystem`, `providerName: session-tree`, `includeDefaultRoots: false`) on that directory. The Skill's `whenToUse` is written for the way users actually talk — "continue", "running out of context", "hand off to a fresh session", "around 50%" — so a newly started agent finds the discipline in its Skill catalog without being handed a tool list. It covers the status check, the 50% rule, the parameter template for the recap, the root/sibling matrix, what the successor inherits, how to verify the handoff, and how to read `degraded`/`warnings`.
+
+Skills are part of the plugin package, so they version and ship together with the tools: `package.json.files` includes `skills`, and the same bundle patch layer that makes `session_handoff` available is what registers the Skill provider. A profile that composes no `@deepseek-ai/dsh-skill-filesystem` row still loads the plugin and the tools; only the catalog entry is absent.
+
 ## How it works
 
 - **Seat.** The plugin occupies `sidebar.workspaces`, the left sidebar's single-occupant slot, at priority **-100**. The slot system elects the *lowest* priority for a single slot, and registering at an already-taken priority throws at load, which is why a distinct priority is required. The shipped `WorkspaceBrowser` sits at priority 0, so this plugin wins the seat while the built-in entry stays registered — disabling the plugin restores the built-in sidebar untouched.
@@ -238,7 +245,7 @@ The client bundle is served as a file whose revision is derived from its size an
 Enabling and disabling is applied to the page live. If the change does not appear, refresh the page once.
 
 **I changed the Host half (`index.js`) and the tool did not change.**
-The Loader caches already-imported Host modules **by package name**, so editing the Host half of an installed package requires restarting DSH — disabling/enabling the bundle, reinstalling it, or pointing its entry at a new file path all serve the cached module. Only a new package name bypasses that cache. The client half is unaffected by this and only needs a page refresh.
+The Loader caches already-imported Host modules **by package name**, and a plain file save does not re-evaluate them — even when the package lives under the profile's `hmr.root` (measured 2026-11-11). Disable and re-enable the plugin row (`session-tree` on the Plugins page, or `plugin_manager set_plugin enabled:false` → `true` for the `include:session-tree` entry); that reload loads the new Host module. Restarting DSH also works. The same applies to bundle-patch changes such as the Skill provider row. The client half is unaffected and only needs a page refresh.
 
 **A row shows a label that is not the session title.**
 That is intended, and it matches the rest of the app. For a subagent, what DSH displays in the main-window header crumb and in the right-sidebar tab is the subagent's **descriptor label** — the delegation label it was created with — not `session/title`. This plugin renders the same label so that a row and the conversation it opens agree. The session's own title is kept as secondary information: it appears after a dash in the row's tooltip (`label — title`). Ordinary (non-subagent) rows show the durable session title.
@@ -257,9 +264,10 @@ The repository is plain ESM; nothing is compiled.
 dsh-session-tree/
 ├── index.js                 # Host half: the tree_send and session_handoff tools
 ├── client.js                # Client half: the whole sidebar UI (browser bundle)
-├── cordis.patch.yml         # the single Cordis row this bundle contributes
+├── cordis.patch.yml         # the two Cordis rows this bundle contributes (plugin + Skill provider)
 ├── package.json             # manifest: dsh.bundle, dsh.client, exports
 ├── locale/{en,zh}.json      # display metadata for the Plugins page
+├── skills/session-handoff/SKILL.md  # bundled Skill: handoff discipline (loaded via patch row 2)
 ├── icon.svg                 # bundle icon
 ├── scripts/verify-bundle.mjs  # manifest self-check
 ├── test/render.test.cjs     # headless render test
@@ -284,6 +292,12 @@ node test/handoff.test.js
 ```
 
 They use `node:test` with plain service mocks — no real session is created and no `@deepseek-ai/*` package is loaded; files are written to a throw-away temp directory.
+
+Check the bundled Skill's packaging (frontmatter parses, `package.json.files` publishes it, and the bundle patch mounts the filesystem Skill provider on it):
+
+```sh
+node test/skills.test.cjs
+```
 
 Check the manifest against the rules DSH applies before it installs a bundle (patch file present and resolvable, `exports["./client"]` plus `dsh.client.platform`, the client module id equal to the package name, icon size, locale files, and the declared DSH peers):
 
