@@ -11,6 +11,8 @@ whenToUse: '用户说「继续干」「接着做」「快到上限了」「上�
 
 工具：`session_handoff`（会话树包 `@orphiczhou/dsh-session-tree`，与 `tree_send` 同 bundle）。两种 action：`status`（只读）/ `handoff`（写文件、起接替会话）。
 
+> 同 bundle 的 `tree_send` 自 **v1.4.0** 起只能在**同一棵会话树**内投递，且**不再接受 `parent` 参数**（目标的父地址由宿主从目标自己的日志解析，调用者身份与双方父链也由宿主校验）；跨树投递以 `E_CROSS_TREE_SEND` 拒绝，父链不可验证时 fail-closed。交接后如果要通知同树的其他会话，直接 `tree_send {target, message}`，不要传 `parent`，也不要试图跨树寻址。
+
 ## 0. 三条硬规则（先记）
 
 1. **先 status，再 handoff**。不知道 `context_pct` 就不交接；`status` 是唯一权威读数（不要自己猜百分比）。

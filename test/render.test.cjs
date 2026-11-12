@@ -23,9 +23,11 @@
  *      数据驱动的检查。这一段永不崩溃、永不阻塞、默认永不失败（不一致只打印
  *      WARN），缺失时静默退回夹具模式。
  *
- * 断言构成：90 项与参考套件逐条对应（名称、判定、意图都不变），另有 8 项
- * 夹具/套件自检（前缀 `夹具：`），用来证明夹具真的满足上面那串要求、并且那
- * 90 项确实全部执行（没有被条件分支悄悄跳过）。总判定项 98。
+ * 断言构成：90 项与参考套件逐条对应（名称、判定、意图都不变），其余为后续
+ * 功能回归（工作区/检索/行菜单/标题/会话界面元数据等），另有 9 项夹具/套件
+ * 自检（前缀 `夹具：`），用来证明夹具真的满足上面那串要求、并且那 90 项确实
+ * 全部执行（没有被条件分支悄悄跳过）。当前总判定项见运行输出
+ * （参考套件对齐 151 / 夹具自检 9）。
  *
  * 只使用 Node 内置模块（node:fs / node:path / node:vm / node:zlib / node:os）。
  *
@@ -528,6 +530,8 @@ check('factory 返回 { inject, apply }', !!mod && typeof mod.apply === 'functio
 // ------------------------------------------------------------------- ctx stub
 let registered = null
 let registeredSlot = null
+/** Every slot registration the plugin performs (sidebar + conversation UI). */
+const slotRecords = []
 const opened = []
 const refreshed = []
 const started = []
@@ -566,8 +570,15 @@ const ctx = {
       cb()
     },
     register(opts, Comp) {
-      registeredSlot = opts
-      registered = Comp
+      // v1.4.0: the plugin now registers THREE additive list/single entries
+      // (sidebar seat + conversation composer dock + conversation header
+      // utilities). Keep every registration, and keep `registered` bound to the
+      // sidebar seat so the pre-existing render cases below stay intact.
+      slotRecords.push({ opts, Comp })
+      if (opts && opts.name === 'sidebar.workspaces') {
+        registeredSlot = opts
+        registered = Comp
+      }
       return () => {}
     },
   },
@@ -1751,6 +1762,203 @@ check(
 )
 sandbox.window.localStorage = savedLocalStorage
 resetStorage()
+
+// ---------------------- test 24: 会话界面元数据（dock 条 + 只读 header chip）
+console.log('\n=== 测试 24：会话界面元数据（composer dock 条 + 只读子会话 header chip）===')
+/** Find one registered slot entry by slot name. */
+const slotEntry = (name) => slotRecords.find((r) => r.opts && r.opts.name === name) || null
+const stripEntry = slotEntry('conversation.composer.dock')
+const chipEntry = slotEntry('conversation.session.header.utilities')
+check(
+  '注册 composer.dock 条目 { id:session-meta, order:100 }（list、追加式）',
+  !!stripEntry && stripEntry.opts.id === 'session-meta' && stripEntry.opts.order === 100,
+  stripEntry ? JSON.stringify(stripEntry.opts) : '(未注册)',
+)
+check(
+  '注册 header.utilities 兜底条目 { id:session-meta-chip, order:60 }',
+  !!chipEntry && chipEntry.opts.id === 'session-meta-chip' && chipEntry.opts.order === 60,
+  chipEntry ? JSON.stringify(chipEntry.opts) : '(未注册)',
+)
+check(
+  '两个会话界面条目 id 互不相同，且都不复用官方 id',
+  !!stripEntry && !!chipEntry && stripEntry.opts.id !== chipEntry.opts.id,
+)
+
+/** Text of one rendered element (recursive over the mini renderer). */
+const sinkText = (el) => {
+  if (!el) return ''
+  if (typeof el.text === 'string' || typeof el.text === 'number') return String(el.text)
+  return (el.kids || []).map(sinkText).join('')
+}
+/** Render one exported component with synthetic slot props. */
+function renderSlotComponent(Comp, props) {
+  const sink = []
+  let threw = null
+  try {
+    renderTree(Comp(props), sink)
+  } catch (e) {
+    threw = e
+  }
+  return { sink, threw }
+}
+/** The zh dictionary subset the metadata components need. */
+const tMeta = (key, vars) => {
+  const words = {
+    model: '模型',
+    effort: '思考强度',
+    effortDefault: '默认',
+    contextUsage: '上下文占用 {pct}%（{used}/{window} tokens）',
+  }
+  let s = words[key] !== undefined ? words[key] : key
+  if (vars) for (const k of Object.keys(vars)) s = s.split('{' + k + '}').join(String(vars[k]))
+  return s
+}
+const metaProjections = {
+  modelSelection: {
+    lastUsed: { provider: 'opencode-go', model: 'deepseek-v4.1-flash', reasoningEffort: 'max' },
+  },
+  contextPressure: { contextWindow: 200000, pressureTokens: 50000, projectedTokens: 76000 },
+}
+const stripProps = (overrides) =>
+  Object.assign(
+    {
+      sessionId: 'kid-session-1',
+      t: tMeta,
+      useProjection: (key) => metaProjections[key],
+      useSessions: (sel) =>
+        sel({ byId: { 'kid-session-1': { id: 'kid-session-1', parentId: 'parent-session-0' } } }),
+      useSession: (sel) =>
+        sel({ subagent: { address: { mode: 'continuable' }, parentAvailable: true }, running: false }),
+    },
+    overrides,
+  )
+
+// ① dock strip：只对子会话渲染，显示 model · effort · pct。
+const stripRun = renderSlotComponent(mod.SessionMetaStrip, stripProps())
+const stripEl = stripRun.sink.find((e) => e.tag === 'div' && String(e.props.className) === 'st-meta-strip') || null
+check('dock 条组件可渲染且不抛错', stripRun.threw === null, stripRun.threw && stripRun.threw.message)
+check(
+  'dock 条显示 model · effort · pct（projectedTokens 优先 → 38%）',
+  !!stripEl &&
+    sinkText(stripEl).includes('deepseek-v4.1-flash') &&
+    sinkText(stripEl).includes('max') &&
+    sinkText(stripEl).includes('38%'),
+  stripEl ? sinkText(stripEl) : '(无)',
+)
+check(
+  'dock 条 title/aria 给出 provider 与 token 明细，data-session-meta 绑定会话',
+  !!stripEl &&
+    String(stripEl.props.title).includes('opencode-go/deepseek-v4.1-flash') &&
+    String(stripEl.props['aria-label']).includes('上下文占用 38%（76000/200000 tokens）') &&
+    stripEl.props['data-session-meta'] === 'kid-session-1',
+  stripEl ? String(stripEl.props.title) : '(无)',
+)
+
+// ② root 会话不重复：官方 ModelSelect/ContextMeter 已显示，dock 条返回 null。
+const rootRun = renderSlotComponent(
+  mod.SessionMetaStrip,
+  stripProps({
+    useSessions: (sel) => sel({ byId: { 'kid-session-1': { id: 'kid-session-1' } } }),
+    useSession: (sel) => sel({ subagent: null, running: false }),
+  }),
+)
+check(
+  'root 会话 dock 条返回 null（不重复官方 model/context）',
+  rootRun.threw === null && rootRun.sink.length === 0,
+  rootRun.sink.map((e) => e.tag).join(','),
+)
+
+// ③ 缺投影 → 诚实隐藏（不渲染假值）。
+const emptyRun = renderSlotComponent(mod.SessionMetaStrip, stripProps({ useProjection: () => undefined }))
+check('缺 model/context 投影时 dock 条不渲染（不显示 0/假值）', emptyRun.threw === null && emptyRun.sink.length === 0)
+
+// ④ effort 缺省显示「默认」；window 缺失则不显示 pct。
+const noEffortRun = renderSlotComponent(
+  mod.SessionMetaStrip,
+  stripProps({
+    useProjection: (key) =>
+      key === 'modelSelection' ? { lastUsed: { provider: 'p', model: 'm-next' } } : { pressureTokens: 123 },
+  }),
+)
+const noEffortEl = noEffortRun.sink.find((e) => e.tag === 'div' && String(e.props.className) === 'st-meta-strip') || null
+check(
+  '缺 reasoningEffort → 显示「默认」；无 contextWindow → 不渲染 pct',
+  !!noEffortEl &&
+    sinkText(noEffortEl).includes('m-next') &&
+    sinkText(noEffortEl).includes('默认') &&
+    !sinkText(noEffortEl).includes('%'),
+  noEffortEl ? sinkText(noEffortEl) : '(无)',
+)
+
+// ⑤ header chip：只对只读子会话渲染（composer 被官方替换的场景）。
+const chipRun = renderSlotComponent(
+  mod.SessionMetaChip,
+  stripProps({ useSession: (sel) => sel({ subagent: { address: { mode: 'one-shot' } }, running: false }) }),
+)
+const chipEl = chipRun.sink.find((e) => e.tag === 'span' && String(e.props.className).includes('st-meta-chip')) || null
+check(
+  '只读子会话（one-shot）header chip 可渲染 model · effort · pct',
+  !!chipEl && sinkText(chipEl).includes('deepseek-v4.1-flash') && sinkText(chipEl).includes('38%'),
+  chipEl ? sinkText(chipEl) : '(无)',
+)
+for (const [label, session] of [
+  ['root 会话', { subagent: null, running: false }],
+  ['composer 正常的 continuable 子会话', { subagent: { address: { mode: 'continuable' }, parentAvailable: true }, running: true }],
+  ['父离线但仍在运行的 continuable 子会话', { subagent: { address: { mode: 'continuable' }, parentAvailable: false }, running: true }],
+]) {
+  const run = renderSlotComponent(mod.SessionMetaChip, stripProps({ useSession: (sel) => sel(session) }))
+  check(`${label} header chip 返回 null（不重复/不抢官方 UI）`, run.threw === null && run.sink.length === 0)
+}
+const parentOfflineRun = renderSlotComponent(
+  mod.SessionMetaChip,
+  stripProps({
+    useSession: (sel) => sel({ subagent: { address: { mode: 'continuable' }, parentAvailable: false }, running: false }),
+  }),
+)
+const parentOfflineEl =
+  parentOfflineRun.sink.find((e) => e.tag === 'span' && String(e.props.className).includes('st-meta-chip')) || null
+check('父离线且未运行的 continuable 子会话 → header chip 兜底显示', !!parentOfflineEl)
+
+// ⑥ 纯函数/组件作为测试缝导出；树行徽标确认移除。
+check(
+  '导出测试缝：metaOf / selectReadOnlyMeta / SessionMetaStrip / SessionMetaChip',
+  typeof mod.metaOf === 'function' &&
+    typeof mod.selectReadOnlyMeta === 'function' &&
+    typeof mod.SessionMetaStrip === 'function' &&
+    typeof mod.SessionMetaChip === 'function',
+)
+// ⑦ 左侧会话树确实不渲染元数据：即使行投影带 modelSelection，行内也没有
+//    任何 st-meta* 元素（用户要求"不要在左侧会话树显示这些信息"）。
+const treeMetaById = {
+  T1: {
+    id: 'T1',
+    displayTitle: 'Tree row',
+    updatedAt: 10,
+    projectionValues: {
+      modelSelection: { lastUsed: { provider: 'p', model: 'tree-model', reasoningEffort: 'max' } },
+      contextPressure: { contextWindow: 100000, pressureTokens: 5000 },
+    },
+  },
+}
+const t24tree = renderPanel(undefined, treeMetaById, noItems)
+const t24row = t24tree.rows.find((r) => labelOf(r) === 'Tree row')
+check(
+  '左侧会话树行不渲染任何元数据元素（树恢复原样）',
+  !!t24row && !t24row.kids.some((k) => String((k.props && k.props.className) || '').includes('st-meta')),
+  t24row ? JSON.stringify(t24row.kids.map((k) => String((k.props && k.props.className) || ''))) : '(无行)',
+)
+
+const clientSrc24 = fs.readFileSync(CLIENT, 'utf8')
+check(
+  '会话界面 CSS 已注入（.st-meta-strip / .st-meta-pct），且沿用主题变量',
+  /\.st-meta-strip\{/.test(clientSrc24) &&
+    /\.st-meta-pct\{/.test(clientSrc24) &&
+    /\.st-meta-pct\[data-level='warn'\]\{color:var\(--dsw-alias-state-warn-primary\)\}/.test(clientSrc24),
+)
+check(
+  '左侧会话树不再渲染元数据（无 .st-meta 单类规则 / rowMetaElement / ensureMeta）',
+  !/\.st-meta\{/.test(clientSrc24) && !/rowMetaElement/.test(clientSrc24) && !/ensureMeta/.test(clientSrc24),
+)
 
 // ------------------------------------------------- 套件自检：90 项一条不少
 console.log('\n=== 测试 M：套件自检 ===')

@@ -329,9 +329,9 @@ async function main() {
     { name: 'ctx.inject() calls back with no service (scoped miss)', ctx: { inject(keys, cb) { void keys; cb({}) } } },
   ]) {
     const plugin = await loadClient()
-    let slots = 0
+    const slots = []
     const ctx = Object.assign({}, scenario.ctx, {
-      slots: { inject(k, cb) { void k; cb() }, register() { slots++; return () => {} } },
+      slots: { inject(k, cb) { void k; cb() }, register(opts) { slots.push(opts && opts.name); return () => {} } },
     })
     let threw = null
     try {
@@ -340,23 +340,39 @@ async function main() {
       threw = error
     }
     check(`${scenario.name}: apply() does not throw`, threw === null, threw && threw.message)
-    check(`${scenario.name}: sidebar.workspaces still registered`, slots === 1, `${slots} registration(s)`)
+    // v1.4.0 adds two additive conversation-UI entries beside the sidebar seat:
+    // the composer dock strip and the read-only header chip.
+    check(
+      `${scenario.name}: all three additive slot entries register`,
+      slots.length === 3 &&
+        slots.includes('sidebar.workspaces') &&
+        slots.includes('conversation.composer.dock') &&
+        slots.includes('conversation.session.header.utilities'),
+      JSON.stringify(slots),
+    )
   }
 
   // ---------------------------------------------------------- B. real registration
   console.log('\n=== B. provider registration + manifest subset ===')
   const plugin = await loadClient()
   const inspect = { registered: [], register(reg) { this.registered.push(reg); return () => {} } }
-  let slots = 0
+  const slots = []
   const ctx = {
     inject(keys, cb) {
       if (!Array.isArray(keys) || !keys.includes('cordisInspect')) throw new Error(`unexpected inject keys: ${JSON.stringify(keys)}`)
       cb({ cordisInspect: inspect })
     },
-    slots: { inject(k, cb) { void k; cb() }, register() { slots++; return () => {} } },
+    slots: { inject(k, cb) { void k; cb() }, register(opts) { slots.push(opts && opts.name); return () => {} } },
   }
   plugin.apply(ctx)
-  check('sidebar.workspaces still registered alongside the provider', slots === 1, `${slots} registration(s)`)
+  check(
+    'sidebar.workspaces + conversation metadata entries register alongside the provider',
+    slots.length === 3 &&
+      slots.includes('sidebar.workspaces') &&
+      slots.includes('conversation.composer.dock') &&
+      slots.includes('conversation.session.header.utilities'),
+    JSON.stringify(slots),
+  )
   check('exactly one inspect provider registered', inspect.registered.length === 1, `${inspect.registered.length}`)
   const registration = inspect.registered[0]
   if (!registration) {

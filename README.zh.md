@@ -6,9 +6,9 @@
 [![DSH plugin](https://img.shields.io/badge/DSH-plugin-4b5563.svg)](https://github.com/orphiczhou/dsh-session-tree)
 [![Topic: dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-0ea5e9.svg)](https://github.com/topics/dsh-plugin)
 
-一个 DeepSeek Harness 的 profile bundle：把左侧栏换成**会话树**——每个会话下面挂着它的 subagent 后代，可逐层展开、层数不限，点任意节点就能打开该会话的多轮对话。它还注册两个宿主工具：`tree_send` 让智能体能给树里**任意**一个可续聊的子会话发消息，包括内置通讯 API 够不到的**兄弟会话**；`session_handoff` 则让当前会话在上下文将满时自我交接给**同层级**的新会话，并继承同一个工作区、Agent 预设（工作模式）、权限模式、模型与思考等级。
+一个 DeepSeek Harness 的 profile bundle：把左侧栏换成**会话树**——每个会话下面挂着它的 subagent 后代，可逐层展开、层数不限，点任意节点就能打开该会话的多轮对话。它还注册两个宿主工具：`tree_send` 让智能体能给**自己这棵会话树**里的可续聊子会话发消息（包括内置通讯 API 够不到的**兄弟会话**；跨树投递一律拒绝），`session_handoff` 则让当前会话在上下文将满时自我交接给**同层级**的新会话，并继承同一个工作区、Agent 预设（工作模式）、权限模式、模型与思考等级。
 
-**当前版本：v1.3.7。** 随包 `session-handoff` Skill 自 **v1.3.0** 起；接替提示语跟随 DSH 界面语言自 **v1.3.1** 起（见 [releases](https://github.com/orphiczhou/dsh-session-tree/tags)）。
+**当前版本：v1.4.0。** 随包 `session-handoff` Skill 自 **v1.3.0** 起；接替提示语跟随 DSH 界面语言自 **v1.3.1** 起；`tree_send` 自 **v1.4.0** 起只允许同一棵会话树内投递、且不再接受 `parent` 参数（见 [releases](https://github.com/orphiczhou/dsh-session-tree/tags)）。
 
 <!-- 截图占位：有截图后再放到这里。
      不要引用仓库里并不存在的图片文件。 -->
@@ -24,13 +24,14 @@
 | 按需展开 | 初始全部折叠；展开某个节点才构建它的子树，缩进每层加 13 px（最多 8 层）。 |
 | 渲染上限 | 每层最多渲染 300 个子行，其余以明确的“另有 N 个未显示”提示给出，不静默丢弃。 |
 | 四态状态圆点 | 每行一个：进行中（蓝、带呼吸动画）、已完成但还没看过（绿）、已完成且已看过（灰）、正在等你回应（橙）。颜色取自 DSH 主题 token，随明暗主题变化。 |
+| 会话界面元数据 | 在**会话界面**里显示 `模型 · 思考强度 · 上下文%`（用户要求的位置）：composer 卡片下方 dock 行的信息条，以及只读子会话的标题栏 chip 兜底。左侧会话树本身保持纯会话树、不显示这些信息。root 会话不改动——自带模型选择器与 ContextMeter 已显示；**子会话**（自带模型选择器对其禁用）补上 dock 条；one-shot / unknown 模式 / 父离线的只读子会话（composer 被只读面板替换）用标题栏 chip 兜底。全部在客户端从 slot 的 `modelSelection` / `contextPressure` 投影派生；缺失不猜不编，tooltip 给出 provider 与 token 明细。 |
 | 视图选项 | 标题栏 `…` 菜单：按最近更新或按名称排序（置顶会话始终在前）、已归档会话「隐藏 / 显示 / 仅显示」、展开全部、全部折叠、重新加载标题。 |
 | 每行 `…` 菜单 | 置顶 / 取消置顶、重命名（行内编辑：回车提交、Esc 取消、失焦提交）、Fork、归档 / 取消归档。 |
 | `↗` 在右侧栏打开 | 把子会话的对话以 `subagentchat` 资源的形式打开在右侧栏，单独占一个窗格。 |
 | 新建会话 | 标题栏的 `+` 按钮——接管左栏后自带浏览器的新建入口被遮蔽，这里补上。 |
 | 搜索框 | 按标签或会话 id 过滤；过滤时结果仍留在各自的工作区分组下。 |
 | 折叠后的侧栏 | 左栏被折叠成图标条时渲染一个 `≡` 按钮，点击即可展开侧栏。 |
-| `tree_send` 工具 | 宿主半工具：向树里任意可续聊的子会话投递消息，兄弟会话也可以。 |
+| `tree_send` 工具 | 宿主半工具：给调用者**自己这棵会话树**里的可续聊子会话投递消息，兄弟会话也可以；跨树投递拒绝，投递路径也不由调用者指定。 |
 | `session_handoff` 工具 | 宿主半工具：写下 `HANDOFF-*.md` 交接文件，并启动**同层级**接替会话——子会话在同一个活着的父会话下生成兄弟，根会话（或父已不在）生成新根会话。接替会话继承同一个工作目录与侧栏工作区归属、同一个 Agent 预设（工作模式，因此工具集相同）、同一个权限模式（沙箱 + 审批）、同一个模型与思考等级。 |
 | 接替提示跟随界面语言 | 接替会话读到的第一条指令跟随 DSH 界面语言（**设置 → 通用 → 语言**，`locale.preference`）：`zh` 用中文、`en` 用英文；其它已存语言与未存偏好时回退英文。交接文件正文保持英文规范文档，但其中的「Successor instructions」块与提示语同语言；`status`/`handoff` 渲染行尾带 `lang=zh\|en`，返回对象含 `interface_language`，脚本可不解析接替会话日志直接断言。 |
 | `SessionTree` 检视 provider | 只读的 Cordis Inspect provider：回报左栏**实际渲染成了什么**——行序、层级、缩进、几何与计算样式——让 agent 用已有的 `cordis_inspect_query` 自己看真实应用里的树，而不必让你念屏幕。 |
@@ -121,14 +122,17 @@ dsh plugin --profile <name> add /absolute/path/to/dsh-session-tree
 
 ### `tree_send`
 
-`tree_send` 用来给**不是**你直接父会话、也不是你直接子会话的子会话投递消息。自带的 `send_message` 按“活的发送者”授权，因此强制邻接关系，兄弟之间没有路径可走；`tree_send` 改按目标的**持久化父地址**授权，这正是兄弟能被寻址的原因。
+`tree_send` 用来给**调用者自己这棵会话树**里的可续聊子会话投递消息，包括内置 `send_message` 够不到的**兄弟会话**（后者按“活的发送者”授权，因此强制直接父子邻接）。投递经由目标的**持久化父地址**，这个地址由宿主从目标自己的会话日志解析，调用者无从指定。
+
+**只允许同一棵树（v1.4.0）。** 投递前宿主会读取当前调用的会话身份，把 caller 与 target 的父链分别向上走到根，只有两个根是同一个会话（= 属于同一棵树）才投递；指向另一棵树的调用以 `E_CROSS_TREE_SEND` 拒绝，没有任何参数能绕过。
 
 | 参数 | 必填 | 含义 |
 |---|---|---|
-| `target` | 是 | 目标子会话（可续聊）的 session id。 |
+| `target` | 是 | 目标子会话（可续聊）的 session id，必须与调用者同属一棵会话树。 |
 | `message` | 是 | 要投递的正文。 |
 | `delivery` | 否 | `steer`（默认）在目标最近的一个 step 边界投递；`queue` 投给之后的某个 turn。 |
-| `parent` | 否 | 目标的直接父会话 id。省略时由工具从目标自己的会话日志里读出。 |
+
+自 v1.4.0 起**没有 `parent` 参数**：目标的直接父会话由宿主从目标日志解析，显式传入父 id（哪怕是对的）也会以 `E_PARENT_REMOVED` 被拒。这正是跨树注入洞的堵法——投递路径不再由调用者控制，调用者身份也永远取自主机（`exec.agent.session.id`），绝不来自参数。
 
 它只返回“已受理”（messageId），**不等待、也不返回回复**：
 
@@ -141,7 +145,7 @@ dsh plugin --profile <name> add /absolute/path/to/dsh-session-tree
 一个顶层会话 `A`，两个可续聊的子会话 `B`、`C`，以及挂在 `B` 下面的孙会话 `D`：
 
 ```
-A  （顶层会话，由它来调用 tree_send）
+A  （顶层会话）
 ├── B  （可续聊子会话）
 │   └── D  （可续聊子会话）
 └── C  （可续聊子会话）
@@ -153,21 +157,24 @@ A  （顶层会话，由它来调用 tree_send）
 { "target": "C", "message": "你问的那个 schema 在 src/session/title/types.ts。", "delivery": "steer" }
 ```
 
-省略了 `parent`，工具于是去读 `C` 的日志，取出它的 `parentSession`（也就是 `A`），再从那个地址投递。`A` 在线，投递被受理。**这正是内置 API 表达不了的情况**——`B` 并不是 `C` 的父会话。
+工具读取 `C` 的日志，取出它的 `parentSession`（也就是 `A`），确认 `B` 与 `C` 同根（`A`），再从那个地址投递。`A` 在线，投递被受理。**这正是内置 API 表达不了的情况**——`B` 并不是 `C` 的父会话。
 
-**父 → 子。** `A` 给 `B` 或 `C` 发消息，就是同一个调用换个 `target`，解析方式也一样——`B` 自己的日志里写着父会话是 `A`，那正是投递用的地址。
+**祖先 → 后代。** `A` 给 `B` 或 `C`、甚至孙会话 `D` 发消息都允许：四个会话同属一棵树。投递仍经由目标的**直接**父地址（`D` 对应 `B`），所以 `B` 在线是那次投递被受理的前提。
 
-**顶层 → 孙会话仍然没有路径。** `A` 给 `D` 发消息需要经由 `D` 的直接父地址（`B`）投递，而从工具的授权角度看 `D` 并不是 `B` 的孩子，请求会以 `subagent/parent-unavailable` 被拒。请分两步：`A` → `B`，再 `B` → `D`。
+**后代 → 祖先。** `D` 给 `A`、`B`、`C` 发消息同样允许——同树、父链已校验。
+
+**跨树没有路径。** 若 `X` 是另一棵树的根，则 `A`/`B`/`C`/`D` 的任何 `tree_send` 都到不了 `X` 或其任何后代：两个根不同，调用以 `E_CROSS_TREE_SEND` 拒绝。传 `parent` 也绕不过去——参数本身就会被拒。
 
 #### 明确的边界
 
-- 目标必须是**可续聊**（`mode: 'continuable'`）的子会话；一次性的子会话会以"不可恢复"被拒。
-- 目标的**直接父会话必须在线**，否则调用失败：`subagent/parent-unavailable`。
+- 目标必须是**可续聊**（`mode: 'continuable'`）的子会话；一次性的子会话会以“不可恢复”被拒。
+- 目标的**直接父会话必须在线**（投递地址就是它），否则调用失败：`subagent/parent-unavailable`。
 - 调用**只返回受理结果**（message id），既不等待回复也不返回回复。
-- 日志里没有 `parentSession` 的目标不是子会话，无法这样寻址。显式传入 `parent` 就等于指定投递地址；传错会被服务拒绝。
-- **两个互不相关的顶层会话之间依然没有路径。** 它们没有共同的父地址——`tree_send` 扩展的是“谁可以被寻址”，不是“谁可以被触达”。
+- 日志里没有 `parentSession` 的目标不是子会话，无法这样寻址。
+- **跨树投递一律拒绝。** 两个会话必须共享同一个树根；凡父链无法验证的情况——目标或调用者不在会话库、父链中间断掉、成环、会话库读失败、`sessionQuery` 服务缺失——都 **fail-closed**，绝不当作“同树”放行。
+- `E_CALLER_REQUIRED`：执行器拿不到 ambient 调用会话；`E_SEND_TO_SELF`：调用者与目标是同一会话；`E_CROSS_TREE_SEND`：两棵树不同根。
 
-失败会以抛错形式报告，带 `tree_send:` 前缀，例如 `tree_send: delivery rejected — subagent/parent-unavailable: …`。
+失败会以抛错形式报告，带 `tree_send:` 前缀和稳定错误码，例如 `tree_send: E_CROSS_TREE_SEND: caller … belongs to the session tree rooted at …, target … belongs to the session tree rooted at …; tree_send only delivers inside the caller's own session tree`，或 `tree_send: delivery rejected — subagent/parent-unavailable: …`。
 
 ### `session_handoff`
 
@@ -266,7 +273,7 @@ Skill 是插件包的一部分，与工具同版本发布：`package.json.files`
 - **工作区。** 工作区列表取自自带浏览器读的同一个标准 prop：`useWorkspaces` → `state.items`（宿主给的有序工作区记录）。归属由 `workspace.sessionIds` 决定，**不是** `cwd`——后者只决定会话能否挂到某个工作区；不属于任何工作区的会话收进合成的**未分组**组，固定排最后。这就是自带浏览器自己的分组规则。两处有意的差异：分组默认**展开**而不是折叠，因为这里的工作区层级是额外加的一层区分，而不是「必须先点开才能看到任何会话」的闸门；另外，只要父会话在 store 里，子会话就一定渲染在父会话下面、不会变成分组根行——这正是「没被任何工作区收录的子会话会把视图摊平」的防线。宿主基线未就绪（没有工作区列表）时退回原来的扁平布局，而不是凭空造一个分组。
 - **标题。** 最新标题在挂载时通过 `remote.session.list({})` 从宿主读取——那是每次现读、覆盖全部会话、并带上各自当前 `projections.values.title` 的接口。客户端 store 里的投影快照**每个连接只加载一次基线**，之后 `refreshProjections` 就是空操作，因此 store 里可能永远停在一个早期的 `fallback` 标题上。选 **重新加载标题** 可以再读一次。
 - **打开会话。** 点击节点复用自带导航（`openSession`），所以打开的就是普通的对话界面、普通的标题栏和输入区。
-- **宿主半**注册两个工具：`tree_send` 与 `session_handoff`。两个定义都直接写成 `defineTool()` 产出的纯对象形状，因此不导入 `@deepseek-ai/dsh-tools`，它也不是依赖；宿主半不导入任何 `@deepseek-ai/*` 包。
+- **宿主半**注册两个工具：`tree_send` 与 `session_handoff`。`tree_send` 通过 `sessionQuery` 解析双方父链（优先用自带的 `traceSession` 祖先原语，缺失时退回逐跳 `filterSessions`），只有 ambient 调用者与目标共享同一个树根才投递，且绝不接受调用者传入的 `parent`。两个定义都直接写成 `defineTool()` 产出的纯对象形状，因此不导入 `@deepseek-ai/dsh-tools`，它也不是依赖；宿主半不导入任何 `@deepseek-ai/*` 包。
 - **检视 provider（`SessionTree.snapshot`）。** 客户端半边注册一个只读的 Cordis Inspect provider，让 agent 能读回屏幕上那棵树：按文档顺序的每一行，含身份（`data-key`）、类型、层级、计算出的 `paddingLeft`、颜色、背景、字重、包围盒几何，以及 `groupCount` / `rowCount`。每一行带 `data-key` / `data-kind` / `data-depth` 正是为了这个：快照报告的是**画出来的东西**，而不是从 state 重算的结果，所以渲染回归藏不到全绿的测试套件后面。`cordisInspect` 由 client runner 提供，并非每种组合都有，因此用**可选注入**（`ctx.inject(['cordisInspect'], cb)`）请求：服务缺席时回调根本不会被调用，左栏照常渲染。它**绝不**进插件声明的 `inject` 数组——那里少一个服务会让整个插件不加载。
 
 ## 兼容性与版本策略
@@ -275,7 +282,7 @@ Skill 是插件包的一部分，与工具同版本发布：`package.json.files`
 
 这是刻意的。DSH 唯一强制检查的兼容字段，就是 `@deepseek-ai/dsh` 与 `@deepseek-ai/dsh-*` 上的 `peerDependencies`，它会拿正在运行的运行时版本做 semver 匹配，任何一个范围不匹配就跳过该 bundle。**没有声明 DSH peer 就不构成任何约束**，所以不声明意味着运行升级时本插件不会硬失败。
 
-这句话说的是兼容**闸门**，不是“以后每个 DSH 版本都能用”的承诺。插件使用的客户端服务是 `slots`、`sessions`、`uiWorkspace`、`sidebarRight`、`locale`，宿主侧用的是 `subagents.prompt`、`sessionQuery.filterSessions`、`agents.create`、`tokenMeter.contextPressure`、`agentPresets`、`permissionPresets`、`workspaceRegistry`；另外 bundle patch 还插入一行 `@deepseek-ai/dsh-skill-filesystem` 来挂载随包 Skill（该包缺席时工具照常、只是没有 Skill 目录项）。如果将来的 DSH 改动了这些接口，相应功能会失效，尽管安装依然成功。需要可复现的安装就钉住一个 commit（`github:orphiczhou/dsh-session-tree#<sha>`）。
+这句话说的是兼容**闸门**，不是“以后每个 DSH 版本都能用”的承诺。插件使用的客户端服务是 `slots`、`sessions`、`uiWorkspace`、`sidebarRight`、`locale`，宿主侧用的是 `subagents.prompt`、`sessionQuery.filterSessions`（存在时还用 `sessionQuery.traceSession`）、`agents.create`、`tokenMeter.contextPressure`、`agentPresets`、`permissionPresets`、`workspaceRegistry`；另外 bundle patch 还插入一行 `@deepseek-ai/dsh-skill-filesystem` 来挂载随包 Skill（该包缺席时工具照常、只是没有 Skill 目录项）。如果将来的 DSH 改动了这些接口，相应功能会失效，尽管安装依然成功。需要可复现的安装就钉住一个 commit（`github:orphiczhou/dsh-session-tree#<sha>`）。
 
 ## 停用 / 卸载
 
@@ -332,7 +339,9 @@ dsh-session-tree/
 ├── icon.svg                 # bundle 图标
 ├── scripts/verify-bundle.mjs  # 清单自检
 ├── test/render.test.cjs     # headless 渲染测试
+├── test/meta.test.cjs       # 客户端半 metaOf / 只读判定纯函数单测（无 DOM）
 ├── test/handoff.test.js     # 宿主半 session_handoff 测试（node:test）
+├── test/tree-send.test.js   # 宿主半 tree_send 同树规则测试（node:test）
 ├── test/skills.test.cjs     # 随包 Skill 打包回归（frontmatter/files/patch 行）
 ├── LICENSE
 ├── README.md                # 英文 README
@@ -345,7 +354,13 @@ dsh-session-tree/
 node test/render.test.cjs
 ```
 
-它在 Node 沙箱里加载**真实的** `client.js`（stub 掉 `window.__ModuleLoader__` 和 React），用按实时会话数据重建的会话表驱动它，然后断言产出的行结构：默认是否全折叠、逐级展开后的行数、各层缩进、key 是否唯一、畸形行是否被容错处理，以及点击顶层会话与子会话行是否用正确的寻址方式导航。
+它在 Node 沙箱里加载**真实的** `client.js`（stub 掉 `window.__ModuleLoader__` 和 React），用按实时会话数据重建的会话表驱动它，然后断言产出的行结构：默认是否全折叠、逐级展开后的行数、各层缩进、key 是否唯一、畸形行是否被容错处理，以及点击顶层会话与子会话行是否用正确的寻址方式导航。同一套件还用合成 slot props 覆盖两个会话界面元数据面（`conversation.composer.dock` 信息条与 `conversation.session.header.utilities` 只读 chip）。
+
+单独检查会话界面元数据派生（`modelSelection.lastUsed` 优先于 `next`、与自带 `ContextMeter` 同公式的百分比、clamp、缺失/零窗口、诚实 null 契约，以及 header chip 复刻的只读 composer 判定）：
+
+```sh
+node test/meta.test.cjs
+```
 
 跑宿主半测试（交接的层级矩阵、继承事实、工作区归属、闸门、交接文件）：
 
@@ -354,6 +369,14 @@ node test/handoff.test.js
 ```
 
 它们用 `node:test` 与纯服务 mock——不创建真实会话、不加载任何 `@deepseek-ai/*` 包；文件写到一次性临时目录。
+
+跑 `tree_send` 同树测试（兄弟/祖先/根会话允许；跨树、显式 `parent`、caller 缺失、自我投递、以及所有不可读/断裂父链一律拒绝）：
+
+```sh
+node test/tree-send.test.js
+```
+
+它们用 fake `sessionQuery`（同时覆盖 `traceSession` 路径与 `filterSessions` 回退）和 fake `subagents.prompt` 驱动真实执行器，不加载 DSH 即可钉住这条安全边界。
 
 检查随包 Skill 的打包正确性（frontmatter 可解析、`package.json.files` 会发布它、bundle patch 把 filesystem Skill provider 挂到该目录）：
 

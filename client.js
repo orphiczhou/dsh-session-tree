@@ -84,6 +84,20 @@ window.__ModuleLoader__.load({
 .st-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .st-label-fallback{opacity:.6}
 .st-tag{flex:none;font-size:10px;color:var(--dsw-alias-label-tertiary);opacity:.85;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);padding:0 4px;line-height:15px}
+/* Session metadata in the CONVERSATION UI (v1.4.0). The sidebar tree stays a
+   pure session tree; the metadata lives where the user asked for it - under the
+   conversation. st-meta-strip is the composer-dock row for addressed child
+   sessions (the shipped ModelSelect/ContextMeter are unavailable there);
+   st-meta-chip is the header-utilities fallback for read-only children whose
+   composer is replaced. Theme tokens keep light/dark consistent. */
+.st-meta-strip{display:inline-flex;align-items:center;gap:8px;max-width:100%;min-width:0;overflow:hidden;white-space:nowrap;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:16px;font-variant-numeric:tabular-nums}
+.st-meta-item{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.st-meta-item:first-child{max-width:24ch}
+.st-meta-pct{flex:none;color:var(--dsw-alias-label-tertiary)}
+.st-meta-pct[data-level='warn']{color:var(--dsw-alias-state-warn-primary)}
+.st-meta-pct[data-level='error']{color:var(--dsw-alias-state-error-primary)}
+.st-meta-chip{font-size:11px;line-height:15px;gap:6px;opacity:.9}
+.st-meta-chip .st-meta-item:first-child{max-width:20ch}
 .st-note{padding:3px 6px 3px 31px;color:var(--dsw-alias-label-tertiary);font-size:11px}
 .st-err{padding:10px;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5}
 .st-rail{display:flex;align-items:center;justify-content:center;height:100%;cursor:pointer;color:var(--dsw-alias-label-tertiary);background:none;border:0;width:100%}
@@ -230,6 +244,10 @@ window.__ModuleLoader__.load({
         archive: 'Archive',
         unarchive: 'Unarchive',
         titlePending: 'Title not loaded yet — showing a delegation label or folder name instead',
+        model: 'Model',
+        effort: 'Reasoning effort',
+        effortDefault: 'default',
+        contextUsage: 'Context {pct}% ({used} of {window} tokens)',
       },
       zh: {
         title: '会话树',
@@ -277,6 +295,10 @@ window.__ModuleLoader__.load({
         archive: '归档',
         unarchive: '取消归档',
         titlePending: '标题尚未加载——这里显示的是委派标签或目录名',
+        model: '模型',
+        effort: '思考强度',
+        effortDefault: '默认',
+        contextUsage: '上下文占用 {pct}%（{used}/{window} tokens）',
       },
     }
 
@@ -468,6 +490,222 @@ window.__ModuleLoader__.load({
         catalog: Array.isArray(vals && vals.subagentCatalog) ? vals.subagentCatalog : null,
         raw: r,
       }
+    }
+
+    /** A finite number from a projection, or null (never a guessed 0). */
+    function projectionNumber(value) {
+      return typeof value === 'number' && isFinite(value) ? value : null
+    }
+
+    /** The selection the session is currently using: `lastUsed`, else `next`. */
+    function selectionOf(modelSelection) {
+      if (!modelSelection || typeof modelSelection !== 'object') return null
+      const lastUsed =
+        modelSelection.lastUsed && typeof modelSelection.lastUsed === 'object'
+          ? modelSelection.lastUsed
+          : null
+      if (lastUsed) return lastUsed
+      return modelSelection.next && typeof modelSelection.next === 'object' ? modelSelection.next : null
+    }
+
+    /** Trimmed non-empty string from a projection, else null. */
+    function projectionText(value) {
+      return typeof value === 'string' && value.trim() ? value.trim() : null
+    }
+
+    /**
+     * Derive the session metadata shown in the CONVERSATION UI.
+     *
+     * Contract (report `session-metadata-display-2026-11-12.md` §9.4):
+     *   - `model`/`provider`/`effort` come from `modelSelection.lastUsed`, with
+     *     `next` as the documented fallback. A missing `reasoningEffort` stays
+     *     null (the renderer shows the localized "default"), never a guess.
+     *   - `pct` uses the same formula as the shipped `ContextMeter`
+     *     (`dsh-client-ui-conversation/lib/client.js:21520-21534`):
+     *     `used = projectedTokens ?? pressureTokens`,
+     *     `pct = min(100, round(used / contextWindow * 100))` clamped to 0–100;
+     *     no window / no token count → no percentage at all.
+     *   - Everything absent stays null. If nothing displayable is left (no model,
+     *     no effort, no percentage) the whole meta is null — no fake badge.
+     *
+     * Exported on the module object as a pure test seam (`test/meta.test.cjs`);
+     * it touches no DOM and no service.
+     */
+    function metaOf(modelSelection, contextPressure) {
+      const selection = selectionOf(modelSelection)
+      const model = selection ? projectionText(selection.model) : null
+      const provider = selection ? projectionText(selection.provider) : null
+      const effort = selection ? projectionText(selection.reasoningEffort) : null
+      const pressure =
+        contextPressure && typeof contextPressure === 'object' ? contextPressure : null
+      const window = pressure ? projectionNumber(pressure.contextWindow) : null
+      const contextWindow = window !== null && window > 0 ? window : null
+      const projected = pressure ? projectionNumber(pressure.projectedTokens) : null
+      const forced = pressure ? projectionNumber(pressure.pressureTokens) : null
+      let usedTokens = projected !== null ? projected : forced
+      // Negative token counts are malformed facts, not "0 used": drop them.
+      if (usedTokens !== null && usedTokens < 0) usedTokens = null
+      const pct =
+        contextWindow !== null && usedTokens !== null
+          ? Math.max(0, Math.min(100, Math.round((usedTokens / contextWindow) * 100)))
+          : null
+      // Nothing displayable → render nothing at all (blank sessions stay blank).
+      if (!model && !effort && pct === null) return null
+      return { model, provider, effort, pct, usedTokens, contextWindow }
+    }
+
+    /**
+     * Localized one-line description of one metadata fact set, used as the
+     * strip/chip `title` and `aria-label`: provider/model, reasoning effort (or
+     * the honest "default") and the context usage with its token facts.
+     */
+    function metaTitleOf(meta, t) {
+      if (!meta) return ''
+      const parts = []
+      if (meta.model) {
+        parts.push(t('model') + ': ' + (meta.provider ? meta.provider + '/' : '') + meta.model)
+      }
+      parts.push(t('effort') + ': ' + (meta.effort || t('effortDefault')))
+      if (meta.pct !== null) {
+        parts.push(
+          t('contextUsage', {
+            pct: meta.pct,
+            used: meta.usedTokens !== null ? meta.usedTokens : '—',
+            window: meta.contextWindow,
+          }),
+        )
+      }
+      return parts.join(' · ')
+    }
+
+    /**
+     * The shared body of both conversation-UI surfaces: `model · effort · pct`.
+     * Returns a node carrying the display text plus title/aria details, or null
+     * when there is nothing honest to show.
+     */
+    function sessionMetaNode(meta, sessionId, t, options) {
+      if (!meta) return null
+      const kind = options && options.kind === 'chip' ? 'chip' : 'strip'
+      const className = kind === 'chip' ? 'st-meta-strip st-meta-chip' : 'st-meta-strip'
+      const title = metaTitleOf(meta, t)
+      const kids = []
+      if (meta.model) {
+        kids.push(h('span', { className: 'st-meta-item', key: 'model' }, meta.model))
+        kids.push(h('span', { className: 'st-meta-item', key: 'effort' }, meta.effort || t('effortDefault')))
+      }
+      if (meta.pct !== null) {
+        kids.push(
+          h(
+            'span',
+            { className: 'st-meta-item st-meta-pct', key: 'pct', 'data-level': metaLevel(meta.pct) },
+            meta.pct + '%',
+          ),
+        )
+      }
+      if (kids.length === 0) return null
+      return h(
+        kind === 'chip' ? 'span' : 'div',
+        {
+          className,
+          title,
+          'aria-label': title,
+          ...(sessionId ? { 'data-session-meta': sessionId } : {}),
+        },
+        kids,
+      )
+    }
+
+    /**
+     * Mirror of the shipped `selectReadOnlySubagent`
+     * (`dsh-client-ui-subagent/lib/client.js:1221-1230`): the read-only composer
+     * replaces the whole composer (and with it every composer slot) exactly for
+     * these three cases. The header chip uses the same predicate so it renders
+     * only where the dock strip cannot.
+     *
+     * @param sub - `useSession((s) => s.subagent)` snapshot value.
+     * @param running - whether that addressed child is currently running.
+     * @returns `{reason}` when the composer is read-only, else null.
+     */
+    function selectReadOnlyMeta(sub, running) {
+      if (!sub || typeof sub !== 'object') return null
+      const address = sub.address && typeof sub.address === 'object' ? sub.address : null
+      const mode = address && typeof address.mode === 'string' ? address.mode : null
+      if (mode === 'unknown') return { reason: 'unknown' }
+      if (mode === 'one-shot') return { reason: 'one-shot' }
+      if (sub.parentAvailable !== false) return null
+      return running === true ? null : { reason: 'parent-unavailable' }
+    }
+
+    /** Unconditional fallbacks so the slot hook props can never break a render. */
+    const noProjection = () => undefined
+    const noSession = (sel) => (typeof sel === 'function' ? sel(EMPTY) : EMPTY)
+    const noSessions = (sel) => (typeof sel === 'function' ? sel({ byId: EMPTY }) : EMPTY)
+
+    /**
+     * Conversation metadata strip — MAIN surface.
+     *
+     * Registered on `conversation.composer.dock` (list, session scope), so it
+     * sits in the ambient row below the composer card, beside the shipped
+     * ActivityPill/UsagePill. The shipped `ModelSelect` returns null for every
+     * ADDRESSED child session (`dsh-client-ui-model-selection:2074,1297`), which
+     * is exactly the "call 出来的会话有些不显示" the user reported, so this strip
+     * fills the model/effort/context gap for child sessions. Root sessions keep
+     * the shipped ModelSelect + ContextMeter untouched (no duplicate).
+     *
+     * A child whose composer is replaced (one-shot / unknown / parent offline)
+     * never renders the dock at all; `SessionMetaChip` covers that case.
+     */
+    function SessionMetaStrip(props) {
+      const t = props && props.t ? props.t : (key) => key
+      const sessionId = props && props.sessionId
+      const useProjection =
+        props && typeof props.useProjection === 'function' ? props.useProjection : noProjection
+      const useSessions = props && typeof props.useSessions === 'function' ? props.useSessions : noSessions
+      const useSession = props && typeof props.useSession === 'function' ? props.useSession : noSession
+      const selection = useProjection('modelSelection')
+      const pressure = useProjection('contextPressure')
+      const parentId = useSessions((state) => {
+        const row = state && state.byId && sessionId ? state.byId[sessionId] : undefined
+        return row ? row.parentId || row.parentSessionId || null : null
+      })
+      const subagent = useSession((state) => (state && state.subagent) || null)
+      if (!sessionId || (!parentId && !subagent)) return null
+      return sessionMetaNode(metaOf(selection, pressure), sessionId, t, { kind: 'strip' })
+    }
+
+    /**
+     * Conversation metadata chip — FALLBACK for read-only child sessions.
+     *
+     * Registered on `conversation.session.header.utilities` (list, session
+     * scope). It renders ONLY where the shipped read-only composer replaced the
+     * composer (one-shot / unknown mode / parent offline and not running),
+     * because that is the only case where the dock strip cannot appear; every
+     * normal session returns null so nothing is duplicated.
+     */
+    function SessionMetaChip(props) {
+      const t = props && props.t ? props.t : (key) => key
+      const sessionId = props && props.sessionId
+      const useProjection =
+        props && typeof props.useProjection === 'function' ? props.useProjection : noProjection
+      const useSession = props && typeof props.useSession === 'function' ? props.useSession : noSession
+      const selection = useProjection('modelSelection')
+      const pressure = useProjection('contextPressure')
+      const subagent = useSession((state) => (state && state.subagent) || null)
+      const running = useSession((state) => !!(state && state.running))
+      if (!sessionId || !selectReadOnlyMeta(subagent, running)) return null
+      return sessionMetaNode(metaOf(selection, pressure), sessionId, t, { kind: 'chip' })
+    }
+
+    /**
+     * Visual level of a context percentage, for the `.st-meta-pct[data-level]`
+     * CSS. Same intent as the shipped meter's warning colour: near-full windows
+     * stand out; anything else stays tertiary.
+     */
+    function metaLevel(pct) {
+      if (pct === null || pct === undefined) return 'normal'
+      if (pct >= 90) return 'error'
+      if (pct >= 75) return 'warn'
+      return 'normal'
     }
 
     /**
@@ -1397,6 +1635,7 @@ window.__ModuleLoader__.load({
         }),
         [byId, projectionsBySession, expandedIds, query, t, statuses, order, archives, archivedMode, pinned, titleMap, workspaceItems, collapsedGroups, workspaceOrder, hiddenWorkspaces, hiddenMode],
       )
+
       /** Every parent id in the current map — the bound for "expand all". */
       const idsWithChildren = useMemo(() => {
         const s = new Set()
@@ -2036,8 +2275,45 @@ window.__ModuleLoader__.load({
           ctx.slots.register({ name: 'sidebar.workspaces', priority: -100 }, Component),
         )
 
+        /**
+         * Conversation-UI metadata (v1.4.0). Both entries are additive `list`
+         * slots owned by shipped conversation packages, so they only render
+         * where the owner mounts — no shipped UI is shadowed.
+         *
+         *   - MAIN: `conversation.composer.dock` — the ambient row below the
+         *     composer card; this is the user's "会话的界面下面". It renders a
+         *     strip for ADDRESSED child sessions, because the shipped
+         *     `ModelSelect` is disabled for every child and the ContextMeter
+         *     lives in the same composer block.
+         *   - FALLBACK: `conversation.session.header.utilities` — permanent
+         *     right-side utilities. The chip renders ONLY for read-only children
+         *     (one-shot / unknown mode / parent offline), whose composer — and
+         *     therefore the dock — is replaced by the shipped read-only composer.
+         */
+        const withLocale = (render) => (props) => render(Object.assign({}, props, { t }))
+        ctx.slots.inject('conversation.composer.dock', () =>
+          ctx.slots.register(
+            { name: 'conversation.composer.dock', id: 'session-meta', order: 100 },
+            withLocale((props) => h(SessionMetaStrip, props)),
+          ),
+        )
+        ctx.slots.inject('conversation.session.header.utilities', () =>
+          ctx.slots.register(
+            { name: 'conversation.session.header.utilities', id: 'session-meta-chip', order: 60 },
+            withLocale((props) => h(SessionMetaChip, props)),
+          ),
+        )
+
         registerInspectProvider(ctx)
       },
+      // Pure derivation/selector/components exposed as test seams
+      // (`test/meta.test.cjs`, `test/render.test.cjs`). The module loader only
+      // consumes `inject`/`apply`, so these add no runtime surface to the
+      // mounted plugin.
+      metaOf,
+      selectReadOnlyMeta,
+      SessionMetaStrip,
+      SessionMetaChip,
     }
   },
 })

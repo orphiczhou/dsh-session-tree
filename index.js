@@ -4,8 +4,12 @@
  * The tree itself is pure Client rendering (see `client.js`). The Host side
  * registers two tools:
  *
- *   - `tree_send`  — deliver a message to a subagent session that is NOT the
- *                    caller's direct parent or direct child.
+ *   - `tree_send`  — deliver a message to a continuable subagent session inside
+ *                    the caller's own session tree (a sibling, or a deeper or
+ *                    higher member, that the built-in messaging APIs cannot
+ *                    reach); cross-tree delivery is refused and the delivery
+ *                    address is resolved by the Host, never accepted from the
+ *                    caller.
  *   - `session_handoff` — hand this session off to a fresh successor before its
  *                    context budget fills; the successor continues at the same
  *                    level (root -> new root, child -> sibling) with the same
@@ -44,13 +48,23 @@
  * parent address instead, and is callable from the Host. That is the primitive
  * used here.
  *
+ * v1.4.0 closed a security hole in that Host wrapper: `prompt` authorizes the
+ * durable *parent address* but not the *caller*, so any session able to call a
+ * tool could inject a steer into any continuable session it could name a parent
+ * for. `tree_send` therefore (a) accepts no `parent` argument at all, and (b)
+ * resolves the ambient caller (`exec.agent.session.id`), walks both parent
+ * chains to their roots through `sessionQuery`, and refuses delivery unless the
+ * caller and the target share one root — the same session tree. A missing,
+ * broken or unverifiable lineage fails closed.
+ *
  * Consequences, stated plainly:
  *   - The target must be a *continuable* child (`mode: 'continuable'`).
  *   - The target's **direct parent must be live**, otherwise the service throws
  *     `subagent/parent-unavailable`.
  *   - The call returns acceptance only (a message id); it never waits for or
  *     returns a reply.
- *   - Two top-level sessions that share no parent address still have no path.
+ *   - Delivery is limited to the caller's own session tree; two unrelated
+ *     top-level sessions remain unreachable from each other.
  */
 import { promises as fsp, readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -185,23 +199,201 @@ function detachedSignal() {
 }
 
 // ---------------------------------------------------------------------------
-// tree_send (merged from the original Host half, unchanged)
+// tree_send (v1.4.0: same-tree delivery only; the caller cannot name a path)
 // ---------------------------------------------------------------------------
 
-const TREE_SEND = {
+/** Bound for walking one parent chain; a longer chain is treated as malformed. */
+const MAX_LINEAGE_DEPTH = 64
+
+/**
+ * One tool error with a stable machine-readable code in addition to the
+ * `tree_send:` message prefix every failure already carries.
+ */
+function treeSendError(code, detail) {
+  const error = new Error(`tree_send: ${code}: ${detail}`)
+  error.code = code
+  return error
+}
+
+/**
+ * The calling session id — ambient identity only.
+ *
+ * `exec.agent.session.id` is the session the tool executor runs inside; it is
+ * deliberately never read from `args`, because a caller able to name itself
+ * would defeat the whole lineage check.
+ */
+function callerSessionIdOf(exec) {
+  let session
+  try {
+    session = exec && exec.agent && exec.agent.session
+  } catch {
+    session = undefined
+  }
+  const id =
+    session && typeof session === 'object' && typeof session.id === 'string'
+      ? session.id.trim()
+      : ''
+  if (!id) {
+    throw treeSendError(
+      'E_CALLER_REQUIRED',
+      'no calling session (exec.agent.session.id is unavailable); tree_send verifies the caller lineage and never accepts a caller identity from arguments',
+    )
+  }
+  return id
+}
+
+/** One record header from a sessionQuery record, or undefined. */
+function headerOf(record) {
+  return record && typeof record === 'object' && record.header && typeof record.header === 'object'
+    ? record.header
+    : undefined
+}
+
+/** The durable direct parent id of one header ('' for a root session). */
+function parentOfHeader(header) {
+  if (!header || header.parentSession === undefined || header.parentSession === null) return ''
+  return String(header.parentSession).trim()
+}
+
+/**
+ * Walk one parent chain through the shipped `sessionQuery.traceSession`
+ * ancestry primitive (one corpus observation, ancestors + root returned).
+ */
+async function resolveLineageByTrace(query, sessionId, role, signal) {
+  let lineage
+  try {
+    lineage = await query.traceSession(sessionId, signal)
+  } catch (error) {
+    throw treeSendError(
+      'E_LINEAGE_UNRESOLVED',
+      `cannot read the ${role} parent chain of ${sessionId} — ${reasonOf(error)} (fail-closed: same-tree delivery cannot be verified)`,
+    )
+  }
+  if (!lineage || typeof lineage !== 'object') {
+    throw treeSendError(
+      'E_LINEAGE_UNRESOLVED',
+      `the ${role} session ${sessionId} cannot be traced in the session store, so same-tree delivery cannot be verified (fail-closed)`,
+    )
+  }
+  const targetHeader = headerOf(lineage.target)
+  if (!targetHeader) {
+    throw treeSendError(
+      'E_LINEAGE_UNRESOLVED',
+      `the ${role} session ${sessionId} has no readable header in the session store (fail-closed)`,
+    )
+  }
+  if (lineage.complete === false) {
+    throw treeSendError(
+      'E_LINEAGE_UNRESOLVED',
+      `the ${role} parent chain of ${sessionId} is incomplete: parent session ${lineage.unresolvedParentId || 'unavailable'} cannot be read (fail-closed)`,
+    )
+  }
+  const ancestors = Array.isArray(lineage.ancestors) ? lineage.ancestors : []
+  const chain = [sessionId]
+  for (const record of ancestors) {
+    const header = headerOf(record)
+    const id = header && typeof header.id === 'string' ? header.id.trim() : ''
+    if (id) chain.push(id)
+  }
+  const rootHeader = headerOf(lineage.root)
+  const rootId =
+    rootHeader && typeof rootHeader.id === 'string' && rootHeader.id.trim()
+      ? rootHeader.id.trim()
+      : chain[chain.length - 1]
+  return { chain, rootId, parentId: chain.length > 1 ? chain[1] : '' }
+}
+
+/**
+ * Walk one parent chain through per-hop `sessionQuery.filterSessions` lookups.
+ * This is the fallback for Host builds whose `sessionQuery` has no
+ * `traceSession`; both paths return the same `{chain, rootId, parentId}` shape.
+ */
+async function resolveLineageByFilters(query, sessionId, role, signal) {
+  const chain = [sessionId]
+  const seen = new Set([sessionId])
+  let current = sessionId
+  for (let depth = 0; depth < MAX_LINEAGE_DEPTH; depth++) {
+    let records
+    try {
+      records = await query.filterSessions([{ kind: 'id', values: [current] }], signal)
+    } catch (error) {
+      throw treeSendError(
+        'E_LINEAGE_UNRESOLVED',
+        `cannot read the ${role} session ${current} while walking the parent chain of ${sessionId} — ${reasonOf(error)} (fail-closed)`,
+      )
+    }
+    const record = Array.isArray(records) ? records[0] : records || undefined
+    const header = headerOf(record)
+    if (!header) {
+      throw treeSendError(
+        'E_LINEAGE_UNRESOLVED',
+        current === sessionId
+          ? `the ${role} session ${sessionId} is not in the session store (no header), so same-tree delivery cannot be verified (fail-closed)`
+          : `the ${role} parent chain of ${sessionId} is broken at ${current}: that session is not in the session store (fail-closed)`,
+      )
+    }
+    const parent = parentOfHeader(header)
+    if (!parent) return { chain, rootId: current, parentId: chain.length > 1 ? chain[1] : '' }
+    if (parent === current || seen.has(parent)) {
+      throw treeSendError(
+        'E_LINEAGE_UNRESOLVED',
+        `the ${role} parent chain of ${sessionId} is cyclic at ${parent} (fail-closed)`,
+      )
+    }
+    seen.add(parent)
+    chain.push(parent)
+    current = parent
+  }
+  throw treeSendError(
+    'E_LINEAGE_UNRESOLVED',
+    `the ${role} parent chain of ${sessionId} exceeds ${MAX_LINEAGE_DEPTH} levels; refusing to verify the tree (fail-closed)`,
+  )
+}
+
+/**
+ * Resolve one session's parent chain to its tree root.
+ *
+ * Returns `{chain, rootId, parentId}`, where `parentId` is the durable direct
+ * parent ('' when the session is a root) and `rootId` identifies the session
+ * tree. Any unverifiable lineage throws instead of being treated as "same tree".
+ */
+async function resolveLineage(services, sessionId, role, signal) {
+  const query = requestedService(services, 'sessionQuery')
+  if (!query || typeof query !== 'object') {
+    throw treeSendError(
+      'E_LINEAGE_UNRESOLVED',
+      `the sessionQuery service is unavailable, so the ${role} parent chain of ${sessionId} cannot be verified (fail-closed)`,
+    )
+  }
+  if (typeof query.traceSession === 'function') {
+    return resolveLineageByTrace(query, sessionId, role, signal)
+  }
+  if (typeof query.filterSessions === 'function') {
+    return resolveLineageByFilters(query, sessionId, role, signal)
+  }
+  throw treeSendError(
+    'E_LINEAGE_UNRESOLVED',
+    `the sessionQuery service exposes neither traceSession nor filterSessions, so the ${role} parent chain of ${sessionId} cannot be verified (fail-closed)`,
+  )
+}
+
+export const TREE_SEND = {
   name: 'tree_send',
   description:
-    'Send a message to one subagent session anywhere in the session tree, including a sibling that is ' +
-    "neither your direct child nor your direct parent. Delivery goes through the target's direct parent " +
-    'address, so that parent session must be live and the target must be a continuable subagent. ' +
-    'Returns acceptance only; it never waits for or returns a reply.',
+    'Send a message to one continuable subagent session inside YOUR OWN session tree (the same root session) — ' +
+    'a sibling, or a deeper/higher member, that the built-in messenger cannot reach. Delivery to a session in ' +
+    'another tree is refused: the Host reads the calling session, walks both parent chains to their roots and ' +
+    'only delivers when the roots match; it never accepts a caller-supplied delivery path. Delivery goes through ' +
+    "the target's durable direct parent address, so that parent session must be live and the target must be a " +
+    'continuable subagent. Returns acceptance only; it never waits for or returns a reply.',
   parameters: {
     type: 'object',
     additionalProperties: false,
     properties: {
       target: {
         type: 'string',
-        description: 'Session id of the continuable subagent to message.',
+        description:
+          'Session id of the continuable subagent to message. It must belong to the same session tree as this caller.',
       },
       message: {
         type: 'string',
@@ -212,10 +404,6 @@ const TREE_SEND = {
         enum: ['steer', 'queue'],
         description:
           "steer delivers at the target's nearest step boundary (default); queue targets a later turn.",
-      },
-      parent: {
-        type: 'string',
-        description: 'Direct parent session id. Omit to resolve it from the target session log.',
       },
     },
     required: ['target', 'message'],
@@ -240,7 +428,7 @@ const TREE_SEND = {
   },
 }
 
-function makeTreeSendExecute(services) {
+export function makeTreeSendExecute(services) {
   return async function execute(args, exec) {
     const target = String((args && args.target) || '').trim()
     const text = String((args && args.message) || '')
@@ -248,27 +436,51 @@ function makeTreeSendExecute(services) {
     if (!text.trim()) throw new Error('tree_send: "message" must not be empty')
     const delivery = args && args.delivery === 'queue' ? 'queue' : 'steer'
 
-    let parent = args && args.parent ? String(args.parent).trim() : ''
-    if (!parent) {
-      let records
-      try {
-        records = await services.sessionQuery.filterSessions(
-          [{ kind: 'id', values: [target] }],
-          exec.signal,
-        )
-      } catch (error) {
-        throw new Error(`tree_send: cannot read session ${target} — ${reasonOf(error)}`)
-      }
-      const header = records && records[0] && records[0].header
-      parent = (header && header.parentSession) || ''
-      if (!parent) {
-        throw new Error(
-          `tree_send: ${target} is not a subagent session (its log has no parentSession), ` +
-            'so it cannot be addressed this way.',
-        )
-      }
+    // v1.4.0: the delivery path is resolved by the Host, never named by the
+    // caller. An explicit `parent` is rejected rather than silently ignored, so
+    // an old prompt cannot believe it still chooses the address.
+    if (args && Object.prototype.hasOwnProperty.call(args, 'parent') && args.parent !== undefined) {
+      throw treeSendError(
+        'E_PARENT_REMOVED',
+        'the "parent" parameter is not accepted (removed in v1.4.0); the Host resolves the target\'s ' +
+          'durable parent address and verifies that caller and target share one session-tree root. ' +
+          'Remove "parent" from this call.',
+      )
     }
 
+    const callerId = callerSessionIdOf(exec)
+    if (callerId === target) {
+      throw treeSendError(
+        'E_SEND_TO_SELF',
+        `caller ${callerId} is the target session; a session cannot send a message to itself`,
+      )
+    }
+
+    // The target must be a durable child (a subagent): that durable parent
+    // address is also what the delivery uses, so a root target keeps the old
+    // "not a subagent session" refusal.
+    const targetLineage = await resolveLineage(services, target, 'target', exec && exec.signal)
+    if (!targetLineage.parentId) {
+      throw new Error(
+        `tree_send: ${target} is not a subagent session (its log has no parentSession), ` +
+          'so it cannot be addressed this way.',
+      )
+    }
+
+    // Security boundary: the ambient caller and the target must be in the same
+    // session tree (same root). This is checked on the Host, from session
+    // lineage, and fails closed for any unverifiable chain.
+    const callerLineage = await resolveLineage(services, callerId, 'caller', exec && exec.signal)
+    if (callerLineage.rootId !== targetLineage.rootId) {
+      throw treeSendError(
+        'E_CROSS_TREE_SEND',
+        `caller ${callerId} belongs to the session tree rooted at ${callerLineage.rootId}, ` +
+          `target ${target} belongs to the session tree rooted at ${targetLineage.rootId}; ` +
+          "tree_send only delivers inside the caller's own session tree",
+      )
+    }
+
+    const parent = targetLineage.parentId
     try {
       const receipt = await services.subagents.prompt(
         {
@@ -279,7 +491,7 @@ function makeTreeSendExecute(services) {
           delivery,
           content: [{ type: 'text', text }],
         },
-        exec.signal,
+        exec && exec.signal,
       )
       return {
         messageId: String((receipt && receipt.messageId) || ''),

@@ -228,6 +228,28 @@ async function main() {
       check('A0 apply() does not throw', threw === null, threw && threw.message)
       check('A1 exactly one tagged sheet injected into <head>', state.injected.length === 1, String(state.injected.length))
       check('A1b the sheet is reachable via the documented selector', doc.querySelector(SELECTOR) !== null)
+      // v1.4.0 conversation-UI metadata (composer dock strip + read-only header
+      // chip). The sidebar tree itself must NOT carry the row badge any more.
+      const sheet = sheetText(state)
+      check(
+        'A1c the sheet carries the conversation metadata rules (.st-meta-strip / .st-meta-pct)',
+        /\.st-meta-strip\{/.test(sheet) && /\.st-meta-pct\{/.test(sheet),
+        `strip=${/\.st-meta-strip\{/.test(sheet)} pct=${/\.st-meta-pct\{/.test(sheet)}`,
+      )
+      check(
+        'A1d context% levels use theme state tokens (warn / error)',
+        /\.st-meta-pct\[data-level='warn'\]\{color:var\(--dsw-alias-state-warn-primary\)\}/.test(sheet) &&
+          /\.st-meta-pct\[data-level='error'\]\{color:var\(--dsw-alias-state-error-primary\)\}/.test(sheet),
+      )
+      check(
+        'A1e the sidebar row badge is gone (no bare .st-meta / .st-ctx rules)',
+        !/\.st-meta\{/.test(sheet) && !/\.st-ctx\{/.test(sheet),
+      )
+      check(
+        'A1f the shared sidebar row rule keeps its 24px minimum height',
+        /\.st-row\{[^}]*min-height:24px/.test(sheet),
+        /\.st-row\{[^}]*min-height:24px/.exec(sheet) ? 'present' : 'missing',
+      )
       check(
         'A2 sheet text carries the .st-folder 13px rule',
         /\.st-folder\{[^}]*width:13px/.test(sheetText(state)),
@@ -292,7 +314,7 @@ async function main() {
         for (const a of armed) a.fire()
       }
       check('A7 repeated observer fires with the sheet present inject nothing', state.injected.length === 4, String(state.injected.length))
-      check('A8 slot still registered exactly once per apply', slotCount() === 2, String(slotCount()))
+      check('A8 all three slot entries still register once per apply', slotCount() === 6, String(slotCount()))
     } finally {
       undo()
     }

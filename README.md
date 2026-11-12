@@ -6,9 +6,9 @@
 [![DSH plugin](https://img.shields.io/badge/DSH-plugin-4b5563.svg)](https://github.com/orphiczhou/dsh-session-tree)
 [![Topic: dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-0ea5e9.svg)](https://github.com/topics/dsh-plugin)
 
-A DeepSeek Harness profile bundle that turns the left sidebar into a **session tree**: every session plus its nested subagent descendants, expandable to arbitrary depth, each node one click away from its multi-turn conversation. It also adds two Host tools: `tree_send`, which lets an agent message **any** continuable subagent session in the tree — including a sibling, which the built-in messaging APIs cannot reach — and `session_handoff`, which hands the current session off to a fresh successor at the **same level** before its context budget fills, carrying the same workspace, Agent preset, permission preset, model and reasoning effort.
+A DeepSeek Harness profile bundle that turns the left sidebar into a **session tree**: every session plus its nested subagent descendants, expandable to arbitrary depth, each node one click away from its multi-turn conversation. It also adds two Host tools: `tree_send`, which lets an agent message a continuable subagent session **inside its own session tree** — including a sibling, which the built-in messaging APIs cannot reach, while cross-tree delivery is refused — and `session_handoff`, which hands the current session off to a fresh successor at the **same level** before its context budget fills, carrying the same workspace, Agent preset, permission preset, model and reasoning effort.
 
-**Current release: v1.3.7.** Bundled `session-handoff` Skill since **v1.3.0**; the successor kickoff prompt follows the DSH interface language since **v1.3.1** (see [releases](https://github.com/orphiczhou/dsh-session-tree/tags)).
+**Current release: v1.4.0.** Bundled `session-handoff` Skill since **v1.3.0**; the successor kickoff prompt follows the DSH interface language since **v1.3.1**; `tree_send` is limited to the caller's own session tree and no longer accepts a `parent` argument since **v1.4.0** (see [releases](https://github.com/orphiczhou/dsh-session-tree/tags)).
 
 <!-- Screenshot placeholder: add a screenshot of the left sidebar tree here once one exists.
      Do not reference an image file that is not in the repository. -->
@@ -24,13 +24,14 @@ A DeepSeek Harness profile bundle that turns the left sidebar into a **session t
 | Lazy expansion | Nodes start collapsed. Expanding one builds its subtree; indentation grows 13 px per depth level (8 levels maximum). |
 | Bounded fan-out | A node renders at most 300 child rows per level; the remainder is reported as an explicit `N more omitted` notice instead of being dropped silently. |
 | Four-state status dot | Per row: running (blue, pulsing), completed but not viewed yet (green), completed and viewed (gray), waiting for your answer (orange). Colours come from DSH theme tokens and follow the light/dark theme. |
+| Conversation metadata | Shows `model · reasoning effort · context %` **in the conversation UI**, where the user asked for it: a strip in the composer dock row (below the composer card) and a header chip fallback for read-only child sessions. The sidebar tree itself stays a plain session tree. Root sessions are left untouched — the shipped model selector and ContextMeter already show these facts there — while addressed **child** sessions (where the shipped model selector is disabled) get the strip, and one-shot / unknown-mode / parent-offline children (whose composer is replaced by the read-only panel) get the header chip. Derived purely on the client from the slot's `modelSelection` / `contextPressure` projections; missing facts are omitted rather than guessed, and the tooltip names provider and token usage. |
 | View options | Header `…` menu: order by last updated or title (pinned sessions always lead), archived sessions hidden / shown / archived-only, expand all, collapse all, reload titles. |
 | Per-row `…` menu | Pin / unpin, rename (inline input: Enter commits, Esc cancels, blur commits), Fork, archive / unarchive. |
 | `↗` open aside | Opens a subagent conversation in the right sidebar as a `subagentchat` resource, in its own pane. |
 | New session | A `+` button in the header, which compensates for the shadowed built-in browser's own entry point. |
 | Search box | Filters rows by label or session id. While filtering, matches stay grouped under their workspace headers. |
 | Collapsed-sidebar rail | When the sidebar is collapsed to its icon rail, renders a `≡` button that expands it again. |
-| `tree_send` tool | Host-side tool that delivers a message to any continuable subagent session in the tree, including a sibling. |
+| `tree_send` tool | Host-side tool that delivers a message to a continuable subagent session inside the caller's **own session tree**, including a sibling. Cross-tree delivery is refused and the delivery path is never caller-supplied. |
 | `session_handoff` tool | Host-side tool that writes a `HANDOFF-*.md` recap and starts a fresh successor at the same level — a sibling under the same live parent for a child session, a new root session for a root (or when the parent is gone). The successor inherits the same working directory, sidebar workspace membership, Agent preset (`work mode`, and therefore the same tool set), permission preset (sandbox + approval), model and reasoning effort. |
 | Language-aware successor prompt | The first message the successor reads follows the DSH interface language (**Settings → General → Language**, `locale.preference`): Chinese for `zh`, English for `en`, English fallback for any other stored language and when no preference is stored. The recap file keeps a canonical English body plus the same localized instruction block; `status`/`handoff` render a trailing `lang=zh\|en` and return `interface_language`. |
 | `SessionTree` inspect provider | Read-only Cordis Inspect provider that reports what the sidebar **actually rendered** — row order, level, indentation, geometry and computed styles — so an agent can inspect the live tree through `cordis_inspect_query` instead of asking you to read the screen. |
@@ -121,14 +122,17 @@ The `…` button on a row (visible on hover) opens: **Pin** / **Unpin**, **Renam
 
 ### `tree_send`
 
-`tree_send` delivers a message to a subagent session that is **not** your direct parent or direct child. The built-in `send_message` authorizes by an exact *live sender* and therefore enforces direct parent/child adjacency, so sibling-to-sibling messaging has no path through it. `tree_send` authorizes by the target's **durable parent address** instead, which is what makes siblings reachable.
+`tree_send` delivers a message to a continuable subagent session **inside the caller's own session tree** — including a sibling, which the built-in `send_message` cannot reach (it authorizes by an exact *live sender* and therefore enforces direct parent/child adjacency). The delivery goes through the target's **durable parent address**, resolved by the Host from the target's own session log.
+
+**Same tree only (v1.4.0).** Before delivering, the Host reads the ambient calling session, walks the caller's and the target's parent chains to their roots, and delivers only when both roots are the same session — i.e. both sessions belong to one tree. A message aimed at a session in another tree is refused with `E_CROSS_TREE_SEND`; no argument overrides this.
 
 | Parameter | Required | Meaning |
 |---|---|---|
-| `target` | yes | Session id of the continuable subagent to message. |
+| `target` | yes | Session id of the continuable subagent to message. It must belong to the caller's own session tree. |
 | `message` | yes | The message text to deliver. |
 | `delivery` | no | `steer` (default) delivers at the target's nearest step boundary; `queue` targets a later turn. |
-| `parent` | no | The target's direct parent session id. Omit it and the tool resolves it from the target's own session log. |
+
+There is deliberately **no `parent` parameter** since v1.4.0. The target's direct parent is resolved by the Host from the target's session log, and naming a parent explicitly (even a correct one) is rejected as `E_PARENT_REMOVED`. That is what closes the cross-tree injection hole: the delivery path is no longer caller-controlled, and the caller identity always comes from the harness (`exec.agent.session.id`), never from arguments.
 
 It returns acceptance only — a message id — and never waits for or returns a reply:
 
@@ -141,7 +145,7 @@ It returns acceptance only — a message id — and never waits for or returns a
 Consider one root session `A` with two continuable subagent children `B` and `C`, and a grandchild `D` under `B`:
 
 ```
-A  (top-level session, runs the tree_send tool)
+A  (top-level session)
 ├── B  (continuable subagent)
 │   └── D  (continuable subagent)
 └── C  (continuable subagent)
@@ -153,21 +157,24 @@ A  (top-level session, runs the tree_send tool)
 { "target": "C", "message": "The schema you asked about is in src/session/title/types.ts.", "delivery": "steer" }
 ```
 
-`parent` is omitted, so the tool reads `C`'s log, finds its `parentSession` (`A`), and delivers through that address. `A` is live, so the delivery is accepted. This is the case the built-in APIs cannot express, because `B` is not `C`'s parent.
+The tool reads `C`'s log, finds its `parentSession` (`A`), confirms that `B` and `C` share the root `A`, and delivers through `A`. `A` is live, so the delivery is accepted. This is the case the built-in APIs cannot express, because `B` is not `C`'s parent.
 
-**Parent → child.** `A` messaging `B` or `C` is the same call with `target` set to the child, and resolves the same way — `B`'s own log names `A` as its parent, which is exactly the address the delivery uses.
+**Ancestor → descendant.** `A` messaging `B` or `C`, or even `D`, is allowed: all four sessions are in the same tree. Delivery still goes through the target's **direct** parent (`B` for `D`), so `B` must be live for that send to be accepted.
 
-**Root → grandchild is not a path.** `A` messaging `D` would require delivering through `D`'s direct parent address (`B`); the caller is not that parent (`A` is not `D`'s parent), so the request is refused with `subagent/parent-unavailable`. Chain two sends: `A` → `B`, then `B` → `D`.
+**Descendant → ancestor.** `D` messaging `A`, `B` or `C` is allowed for the same reason — same tree, verified lineage.
+
+**Cross-tree has no path.** If `X` is the root of a different tree, no `tree_send` call from `A`, `B`, `C` or `D` reaches `X` or any of its descendants: the roots differ, so the call is refused with `E_CROSS_TREE_SEND`. Passing a `parent` argument does not override this — the argument itself is rejected.
 
 #### Exact limits
 
 - The target must be a **continuable** subagent (`mode: 'continuable'`). A one-shot child is refused as not resumable.
-- The target's **direct parent session must be live**. If it is not, the call fails with `subagent/parent-unavailable`.
+- The target's **direct parent session must be live**. If it is not, the call fails with `subagent/parent-unavailable` (the delivery address is that parent).
 - The call **returns acceptance only** (a message id). It never waits for, and never returns, a reply.
-- A target whose log has no `parentSession` is not a subagent session and cannot be addressed this way. Passing `parent` explicitly is what decides the delivery address; if you pass a wrong one, the delivery is rejected by the service.
-- **Two unrelated top-level sessions still cannot reach each other.** They share no parent address, so there is no path — `tree_send` extends who can be *addressed*, not who is *reachable*.
+- A target whose log has no `parentSession` is not a subagent session and cannot be addressed this way.
+- **Cross-tree delivery is refused.** Both sessions must share one tree root. An unverifiable lineage — target or caller not in the session store, a broken parent chain, a cycle, an unreadable store, or an absent `sessionQuery` service — fails closed rather than being treated as same-tree.
+- `E_CALLER_REQUIRED` — the executor has no ambient calling session; `E_SEND_TO_SELF` — caller and target are the same session; `E_CROSS_TREE_SEND` — different tree roots.
 
-Failures are reported as thrown errors with a `tree_send:` prefix, for example `tree_send: delivery rejected — subagent/parent-unavailable: …`.
+Failures are reported as thrown errors with a `tree_send:` prefix and a stable error code, for example `tree_send: E_CROSS_TREE_SEND: caller … belongs to the session tree rooted at …, target … belongs to the session tree rooted at …; tree_send only delivers inside the caller's own session tree` or `tree_send: delivery rejected — subagent/parent-unavailable: …`.
 
 ### `session_handoff`
 
@@ -266,7 +273,7 @@ Skills are part of the plugin package, so they version and ship together with th
 - **Workspaces.** The workspace list comes from the same standard prop the shipped browser reads, `useWorkspaces` → `state.items` (the Host's ordered workspace records). Membership is decided by `workspace.sessionIds` — **not** by `cwd`, which only gates attaching a session to a workspace — and sessions no workspace accounts for collect in a synthetic **Ungrouped** group, always last. That is the shipped browser's own grouping rule. Two deliberate differences: groups start **expanded** rather than collapsed, because the workspace level here is an added distinction rather than a gate you must open before seeing any session; and a session whose parent is present in the store is always rendered under that parent, never as a group root, which is what keeps a subagent that no workspace lists from flattening the view. With no workspace list (Host baseline not ready) the tree falls back to the previous flat layout instead of inventing a group.
 - **Titles.** The newest title is read from the Host on mount through `remote.session.list({})`, which reads every session fresh and carries each session's current `projections.values.title`. That matters because the client store's projection snapshot is loaded once per connection and can keep an early `fallback` title forever; the client-side `refreshProjections` is a no-op once that baseline is ready. Titles are re-read when you pick **Reload titles**.
 - **Opening.** Clicking a node reuses the shipped navigation (`openSession`), so the opened conversation is the ordinary one, with the ordinary header and composer.
-- **The Host half** registers two tools, `tree_send` and `session_handoff`. Both definitions are plain objects in the shape `defineTool()` produces, so `@deepseek-ai/dsh-tools` is not imported and is not a dependency; neither Host half imports any `@deepseek-ai/*` package.
+- **The Host half** registers two tools, `tree_send` and `session_handoff`. `tree_send` resolves both parent chains through `sessionQuery` (the shipped `traceSession` ancestry primitive, with a per-hop `filterSessions` fallback) and refuses delivery unless the ambient caller and the target share one tree root; it never accepts a caller-supplied `parent`. Both definitions are plain objects in the shape `defineTool()` produces, so `@deepseek-ai/dsh-tools` is not imported and is not a dependency; neither Host half imports any `@deepseek-ai/*` package.
 - **Inspect provider (`SessionTree.snapshot`).** The client half registers one read-only Cordis Inspect provider, so an agent can read back the tree that is on screen: every rendered row in document order with its identity (`data-key`), kind, level, computed `paddingLeft`, colour, background, font weight and bounding-box geometry, plus `groupCount` / `rowCount`. Rows carry `data-key`, `data-kind` and `data-depth` for exactly that reason — the snapshot reports what was drawn rather than recomputing it from state, so a rendering regression cannot hide behind a green test suite. `cordisInspect` belongs to the client runner and is **not** part of every composition, so it is requested with an **optional** injection (`ctx.inject(['cordisInspect'], cb)`): where the service is absent the callback never runs and the sidebar renders exactly as before. It is deliberately not in the plugin's declared `inject` list, where one missing service would stop the whole plugin from loading.
 
 ## Compatibility & version policy
@@ -275,7 +282,7 @@ This bundle declares **no `peerDependencies`**.
 
 That is deliberate. The only compatibility field DSH enforces is `peerDependencies` on `@deepseek-ai/dsh` and `@deepseek-ai/dsh-*`, semver-matched against the running runtime version; every declared range must match or the bundle is skipped at load. **Missing DSH peers impose no constraint**, so declaring none means this plugin does not hard-fail on a runtime upgrade.
 
-That is a statement about the compatibility *gate*, not a promise that every future DSH version works with this code. The plugin talks to public client services (`slots`, `sessions`, `uiWorkspace`, `sidebarRight`, `locale`) and to `subagents.prompt` / `sessionQuery.filterSessions` / `agents.create` / `tokenMeter.contextPressure` / `agentPresets` / `permissionPresets` / `workspaceRegistry` on the Host; if a future DSH changes those surfaces, the affected feature will break even though the install still succeeds. Pin a commit (`github:orphiczhou/dsh-session-tree#<sha>`) if you need a reproducible install.
+That is a statement about the compatibility *gate*, not a promise that every future DSH version works with this code. The plugin talks to public client services (`slots`, `sessions`, `uiWorkspace`, `sidebarRight`, `locale`) and to `subagents.prompt` / `sessionQuery.filterSessions` (plus `sessionQuery.traceSession` when present) / `agents.create` / `tokenMeter.contextPressure` / `agentPresets` / `permissionPresets` / `workspaceRegistry` on the Host; if a future DSH changes those surfaces, the affected feature will break even though the install still succeeds. Pin a commit (`github:orphiczhou/dsh-session-tree#<sha>`) if you need a reproducible install.
 
 ## Disable / uninstall
 
@@ -332,7 +339,9 @@ dsh-session-tree/
 ├── icon.svg                 # bundle icon
 ├── scripts/verify-bundle.mjs  # manifest self-check
 ├── test/render.test.cjs     # headless render test
+├── test/meta.test.cjs       # client-half metaOf / read-only predicate unit tests (no DOM)
 ├── test/handoff.test.js     # Host-half tests for session_handoff (node:test)
+├── test/tree-send.test.js   # Host-half tests for tree_send's same-tree rule (node:test)
 ├── test/skills.test.cjs     # bundled-Skill packaging regression (frontmatter/files/patch row)
 ├── LICENSE
 ├── README.md                # this file
@@ -345,7 +354,13 @@ Run the render test:
 node test/render.test.cjs
 ```
 
-It loads the **real** `client.js` in a Node sandbox (stubbing `window.__ModuleLoader__` and React) and drives it with a session map rebuilt from live session data, then asserts the row structure it produces: default collapsed state, per-level row counts after expanding, indentation per depth, key uniqueness, tolerant handling of malformed rows, and that clicking a top-level session and a subagent row navigate with the correct addresses.
+It loads the **real** `client.js` in a Node sandbox (stubbing `window.__ModuleLoader__` and React) and drives it with a session map rebuilt from live session data, then asserts the row structure it produces: default collapsed state, per-level row counts after expanding, indentation per depth, key uniqueness, tolerant handling of malformed rows, and that clicking a top-level session and a subagent row navigate with the correct addresses. The same suite covers the two conversation-UI metadata surfaces (`conversation.composer.dock` strip and `conversation.session.header.utilities` read-only chip) with synthetic slot props.
+
+Check the conversation-metadata derivations in isolation (choice of `modelSelection.lastUsed` vs `next`, the shipped `ContextMeter` percentage formula, clamping, missing/zero windows, the honest-null contract, and the read-only-composer predicate the header chip mirrors):
+
+```sh
+node test/meta.test.cjs
+```
 
 Run the Host-half tests (handoff level matrix, inheritance facts, workspace attribution, guards, recap file):
 
@@ -354,6 +369,14 @@ node test/handoff.test.js
 ```
 
 They use `node:test` with plain service mocks — no real session is created and no `@deepseek-ai/*` package is loaded; files are written to a throw-away temp directory.
+
+Run the `tree_send` same-tree tests (sibling / ancestor / root delivery allowed; cross-tree, explicit `parent`, missing caller, self-send and every unreadable or broken parent chain refused):
+
+```sh
+node test/tree-send.test.js
+```
+
+They drive the real executor with a fake `sessionQuery` (both the `traceSession` path and the `filterSessions` fallback) and fake `subagents.prompt`, so they pin the security boundary without loading DSH.
 
 Check the bundled Skill's packaging (frontmatter parses, `package.json.files` publishes it, and the bundle patch mounts the filesystem Skill provider on it):
 
